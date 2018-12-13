@@ -1,0 +1,6 @@
+*.o
+c63enc
+c63dec
+c63pred
+tmp/
+video/
