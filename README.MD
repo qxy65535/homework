@@ -1,14 +1,20 @@
-# compile
+**compile**
+
 make
 
-# encode
-./c63enc -w 352 -h 288 -o tmp/test.c63 video/FOREMAN_352x288_30_orig_01.yuv
-./c63enc -w 1920 -h 1080 -o tmp/test.c63 video/
+**encode**
 
-# decode
+./c63enc -w 352 -h 288 -o tmp/test.c63 video/FOREMAN_352x288_30_orig_01.yuv
+
+./c63enc -w 1920 -h 1080 -o tmp/test.c63 video/1080p_tractor.yuv
+
+
+**decode**
+
 ./c63dec tmp/test.c63  tmp/test.yuv
 
-# play the raw yuv file
+**play the raw yuv file**
+
 vlc --rawvid-width 352 --rawvid-height 288 --rawvid-fps 30 --rawvid-chroma I420 tmp/test.yuv
 
 首先根据给的word文档试运行了代码，一开始发现编译不过去，然后修改Makefile文件，把ldflag放到了最后。
@@ -51,3 +57,5 @@ block[i*8+7] = (int16_t) result[3];
 视频可以播放，不知道有没有不清晰，现在眼有点花。休息了。
 
 测试了一下tractor，发现段错误了，因此测试只能通过foreman。我自以为是修改的部分能达到和原来完全一样的效果，有点受打击，review代码找一下原因。
+
+发现在win10的ubuntu子系统会段错误但是虚拟机的ubuntu不会。。心里苦啊。。睡觉睡觉
