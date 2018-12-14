@@ -172,10 +172,10 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
             // *result += abs(block2[v*stride+u] - block1[v*stride+u]);
             int64_t *block2_8 = block2+v*stride;
             int64_t *block1_8 = block1+v*stride;
-            __m128i xmm2 = _mm_cvtsi64_si128(block2_8[0]);
-            __m128i xmm1 = _mm_cvtsi64_si128(block1_8[0]);
+            __m128i xmm2 = _mm_cvtsi64_si128(*block2_8);
+            __m128i xmm1 = _mm_cvtsi64_si128(*block1_8);
             __m128i xmm3 = _mm_sad_epu8(xmm2, xmm1);
-            *result += (int)_mm_cvtsi128_si64(xmm3);
+            *result += _mm_cvtsi128_si32(xmm3);
             // *result += result_tmp;
 
         // }
