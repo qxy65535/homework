@@ -111,9 +111,12 @@ static void c63_encode_image(struct c63_common *cm, yuv_t *image)
 
     /* DCT and Quantization */
     int start1 = clock();
-    dct_quantize(image->Y, cm->curframe->predicted->Y, cm->padw[0], cm->padh[0], cm->curframe->residuals->Ydct, cm->quanttbl[0]);
-    dct_quantize(image->U, cm->curframe->predicted->U, cm->padw[1], cm->padh[1], cm->curframe->residuals->Udct, cm->quanttbl[1]);
-    dct_quantize(image->V, cm->curframe->predicted->V, cm->padw[2], cm->padh[2], cm->curframe->residuals->Vdct, cm->quanttbl[2]);
+    // dct_quantize(image->Y, cm->curframe->predicted->Y, cm->padw[0], cm->padh[0], cm->curframe->residuals->Ydct, cm->quanttbl[0]);
+    // dct_quantize(image->U, cm->curframe->predicted->U, cm->padw[1], cm->padh[1], cm->curframe->residuals->Udct, cm->quanttbl[1]);
+    // dct_quantize(image->V, cm->curframe->predicted->V, cm->padw[2], cm->padh[2], cm->curframe->residuals->Vdct, cm->quanttbl[2]);
+    dct_quantize(image->Y, cm->curframe->predicted->Y, cm->width, cm->height, cm->curframe->residuals->Ydct, cm->quanttbl[0]);
+    dct_quantize(image->U, cm->curframe->predicted->U, cm->width*UX/YX, cm->height*UY/YY, cm->curframe->residuals->Udct, cm->quanttbl[1]);
+    dct_quantize(image->V, cm->curframe->predicted->V, cm->width*VX/YX, cm->height*VY/YY, cm->curframe->residuals->Vdct, cm->quanttbl[2]);
     int end1 = clock();
     /* Reconstruct frame for inter-prediction */
     int start2 = clock();

@@ -1,16 +1,17 @@
 
-# 目录
-### - [优化说明](#optimization)
+## 目录
+#### - [优化说明](#optimization)
 - [SSE 指令简单说明](#sse)
 - [sad_block_8x8 函数的优化](#optimization1)
+- [原版代码 BUG 解决](#bug)
 
-### - [执行指令](#shell)
-### - [日志记录（碎碎念）](#log)
+#### - [执行指令](#shell)
+#### - [日志记录（碎碎念）](#log)
 
 
-<h1 id="optimization">优化说明</h1>
+<h2 id="optimization">优化说明</h2>
 
-<h2 id="sse">SSE 指令简单说明</h2>
+<h3 id="sse">SSE 指令简单说明</h3>
 
 根据上课讲的，SSE 指令集有共有八个128位的寄存器 xmm0 ~ xmm7，因此一个寄存器可以存放 4 个 32 位的数据（如 int, float），并利用指令同时进行一个寄存器（四个 32 位数据）的运算。例如：
 
@@ -20,8 +21,8 @@
 
 int main() 
 {
-	float a[4] = {0,1,2,3};
-	float b[4] = {4,5,6,7};
+    float a[4] = {0,1,2,3};
+    float b[4] = {4,5,6,7};
 	float c[4];
     
     __m128 xmm0 = _mm_load_ps(a); // 载入指针 a 所指向的四个数据到寄存器
@@ -59,7 +60,7 @@ int main()
 }
 ```
 
-<h2 id="optimization1">sad_block_8x8 函数的优化</h2>
+<h3 id="optimization1">sad_block_8x8 函数的优化</h3>
 
 c63_motion_estimate -> me_block_8x8 -> me_block_8x8 -> sad_block_8x8
 
@@ -127,9 +128,78 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 
 首先用 int64_t 类型的指针指向 block 数据块的当前位置。指针取出一块数据的长度与指针类型有关，因此 int64_t 类型的指针能一次性取出 block 数据块中 64 位（8 字节）的数据，即一次 u 循环中所有的 8 个数据，避免用 int8_t 类型多次取数据造成的性能浪费。然后利用 _mm_cvtsi64_si128 将 block1 和 block2 中的 8bit*8=64bit 数据分别载入 xmm1 和 xmm2 的低 64 位 ，并利用 _mm_sad_epu8 将两个寄存器的每 8 位相减求绝对值之和写入 xmm3，最后用 _mm_cvtsi128_si32 取出 xmm3 的低 32 位与 int 型的 result 累加。这样就去掉了内层的八次循环，并实现了八个数据的同时运算。
 
+<h3 id="bug">原版代码 BUG 解决</h3>
 
+**问题发现**
 
-<h1 id="shell">执行指令</h1>
+在初测试过程中发现了编码 1080p 的视频时，在 ubuntu on windows 上会报段错误，而在虚拟机的 ubuntu 18.04 上不会的问题。
+
+跟进到代码里，发现是 common.c: dct_quantize_row() 中的
+
+```c
+block[i*8+j] = ((int16_t)in_data[i*w+j+x] - prediction[i*w+j+x]);
+```
+
+这一行出现问题。这样就很可能是发生了数组访问越界。查看代码：
+
+```c
+void dequantize_idct(int16_t *in_data, uint8_t *prediction, uint32_t width, uint32_t height,
+			 uint8_t *out_data, uint8_t *quantization)
+{
+    int y;
+    for (y=0; y<height; y+=8)
+    {
+        dequantize_idct_row(in_data+y*width, prediction+y*width, width, height, y, out_data+y*width, quantization);
+    }
+}
+
+void dct_quantize_row(uint8_t *in_data, uint8_t *prediction, int w, int h,
+        int16_t *out_data, uint8_t *quantization)
+{
+    int x;
+
+    int16_t block[8*8];
+
+    /* Perform the DCT and quantization */
+    for(x = 0; x < w; x += 8)
+    {
+        int i,j;
+        for (i=0; i<8; ++i)
+            for (j=0; j<8; ++j)
+                block[i*8+j] = ((int16_t)in_data[i*w+j+x] - prediction[i*w+j+x]);
+
+        /* Store MBs linear in memory, i.e. the 64 coefficients are stored continous.
+         * This allows us to ignore stride in DCT/iDCT and other functions. */
+        dct_quant_block_8x8(block, out_data+(x*8), quantization);
+    }
+}
+```
+
+根据传参，1920*1080的视频 width 为 1920，height 为1080，padw 为1920，padh 为1088。review 调用这里的函数，此处传参的 width，height，w，h 都是 padw 和 padh。
+
+dct_quantize_row() 函数中 in_data 的起始地址为 in_data+y\*width， y 最大取值1080，因此 in_data 的起始地址最大为 in_data+1080*1920。在接下来的调用里还要访问 in_data[i\*w+j+x] 的地址，而 in_data 作为 image->Y，在 c63enc.c 中可以看到 image->Y = malloc(width\*height)，它只有 width\*height=1920\*1080 个字节的长度。因此此处的访问必然导致越界。ubuntu on windows 的报错是没有问题的，反而虚拟机中 ubuntu 不报错比较奇怪。（ubuntu on windows 中 gcc 版本为 5.4.0，虚拟机的 ubuntu 中 gcc 版本为 7.3.0，目前不清楚有没有关系）
+
+**问题解决**
+
+参考 mjpeg_encoder.c 里的算法修正了一下 c63enc.c，DCT 和量化中不再使用 padw 和 padh 而是使用原始的 width 和 height。具体修正如下：
+
+```c
+// c63enc.c
+
+// 修改前
+dct_quantize(image->Y, cm->curframe->predicted->Y, cm->padw[0], cm->padh[0], cm->curframe->residuals->Ydct, cm->quanttbl[0]);
+dct_quantize(image->U, cm->curframe->predicted->U, cm->padw[1], cm->padh[1], cm->curframe->residuals->Udct, cm->quanttbl[1]);
+dct_quantize(image->V, cm->curframe->predicted->V, cm->padw[2], cm->padh[2], cm->curframe->residuals->Vdct, cm->quanttbl[2]);
+
+// 修改后
+dct_quantize(image->Y, cm->curframe->predicted->Y, cm->width, cm->height, cm->curframe->residuals->Ydct, cm->quanttbl[0]);
+dct_quantize(image->U, cm->curframe->predicted->U, cm->width*UX/YX, cm->height*UY/YY, cm->curframe->residuals->Udct, cm->quanttbl[1]);
+dct_quantize(image->V, cm->curframe->predicted->V, cm->width*VX/YX, cm->height*VY/YY, cm->curframe->residuals->Vdct, cm->quanttbl[2]);
+```
+
+经测试后发现两个平台下都能跑通了。而且编码后的文件能被正常解码，解码后的视频能正常播放。
+
+<h2 id="shell">执行指令</h2>
 
 **compile**
 
@@ -140,31 +210,33 @@ $ make
 **encode**
 
 ```shell
-$ ./c63enc -w 352 -h 288 -o tmp/test.c63 video/FOREMAN_352x288_30_orig_01.yuv
-$ ./c63enc -w 1920 -h 1080 -o tmp/test.c63 video/1080p_tractor.yuv
+$ ./c63enc -w 352 -h 288 -o tmp/FOREMAN_352x288_30_orig_01.c63 video/FOREMAN_352x288_30_orig_01.yuv
+$ ./c63enc -w 1920 -h 1080 -o tmp/1080p_tractor.c63 video/1080p_tractor.yuv
 ```
 
 **decode**
 ```shell
-$ ./c63dec tmp/test.c63  tmp/test.yuv
+$ ./c63dec tmp/FOREMAN_352x288_30_orig_01.c63  tmp/foreman.yuv
+$ ./c63dec tmp/1080p_tractor.c63  tmp/tractor.yuv
 ```
 
 **play the raw yuv file**
 
 ```shell
-$ vlc --rawvid-width 352 --rawvid-height 288 --rawvid-fps 30 --rawvid-chroma I420 tmp/test.yuv
+$ vlc --rawvid-width 352 --rawvid-height 288 --rawvid-fps 30 --rawvid-chroma I420 tmp/foreman.yuv
+$ vlc --rawvid-width 1920 --rawvid-height 1080 --rawvid-fps 30 --rawvid-chroma I420 tmp/tractor.yuv
 ```
 
 
 
-<h1 id="log">日志记录（碎碎念）</h1>
+<h2 id="log">日志记录（碎碎念）</h2>
 
-<h3>2018/12/12</h3>
+<h4>2018/12/12</h4>
 
 首先根据给的word文档试运行了代码，一开始发现编译不过去，然后修改Makefile文件，把ldflag放到了最后。
 发现用Makefile-new编译的话，用c63dec解码后视频会变模糊和绿屏，去掉-DC63_PRED就不会了。
 
-<h3>2018/12/13</h3>
+<h4>2018/12/13</h4>
 
 最初尝试：从c63enc.c文件的main函数开始查看代码，main -> c63_encode_image -> dct_quantize -> dct_quantize_row, 看到循环存在，尝试用 SSE 指令集优化最内层的8个j循环。想法就是一次性往128位的寄存器载入4个数据进行计算，但在做的途中发现图像的数组每一个元素都是一个字节(8位)而不是32位，正常做法无法直接载入数据。我把数据量类型强制转化为 float 尝试，但结果处理速度比原来慢不说，视频质量也非常非常的差。代码如下：
 ```c
@@ -199,9 +271,21 @@ block[i*8+7] = (int16_t) result[3];
 从 c63_motion_estimate -> me_block_8x8 -> me_block_8x8 -> sad_block_8x8 下手。
 写了个 test.c 测试一些想法的可行性，以及不同数据类型的取数据范围之类的小细节。
 
-卧槽。。。好像速度有点不得了。。。但是 .c63 文件打了好多是怎么回事。。
+卧槽。。。好像速度有点不得了。。。但是 .c63 文件大了好多是怎么回事。。
 视频可以播放，不知道有没有不清晰，现在眼有点花。休息了。
 
 测试了一下tractor，发现段错误了，因此测试只能通过foreman。我自以为是修改的部分能达到和原来完全一样的效果，有点受打击，review代码找一下原因。
 
 发现在win10的ubuntu子系统会段错误但是虚拟机的ubuntu不会。。心里苦啊。。睡觉睡觉
+
+于12.14补充12.13的工作：
+
+还是很在意为什么在 ubuntu for windows 下会段错误，review 了一下我改动的部分，发现有小 BUG：8 个 u 的循环层内部改了但是循环忘了去掉，空转了八次；result 赋值累加也可以再改的漂亮一点。但改完这个并没有对段错误产生任何效果。
+
+于是换个想法，用原版文件换回我改动过的部分，测试是哪段代码改出了问题。但是找不到。这个时候我是坚信是我写出问题来了的，因为印象中这段代码跑通过 1080p（其实是在虚拟机的 ubuntu 跑通过），百思不得其解。最后使用最终手段，用完完全全原版的代码再跑 1080p，终于意识到是原版代码的问题了。然后尝试了虚拟机跑原版代码和我改后的代码。。。。。。。血和泪啊
+
+<h4>2018/12/14</h4>
+
+跟进到代码里，找到出错行后，发现按照这个代码的写法必然出现数组访问越界，反而是不报错的那方比较奇怪。参考 mjpeg_encoder.c 里的算法修正了一下 c63enc.c，在测试后发现两个平台下都能跑通了。而且编码后的文件能被正常解码，解码后的视频能正常播放。具体问题和做法参考 [原版代码 BUG 解决](#bug)
+
+此外还有个小小的不算问题的事儿，就是发现虚拟机的 ubuntu 比 windows 下的 ubuntu 运算要更快点，为什么呢。
