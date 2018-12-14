@@ -1,16 +1,16 @@
 
-### 目录
-#### - [优化说明](#optimization)
+# 目录
+### - [优化说明](#optimization)
 - [SSE 指令简单说明](#sse)
 - [sad_block_8x8 函数的优化](#optimization1)
 
-#### - [执行指令](#shell)
-#### - [日志记录（碎碎念）](#log)
+### - [执行指令](#shell)
+### - [日志记录（碎碎念）](#log)
 
 
-<h3 id="optimization">优化说明</h3>
+<h1 id="optimization">优化说明</h1>
 
-<h4 id="sse">SSE 指令简单说明</h4>
+<h2 id="sse">SSE 指令简单说明</h2>
 
 根据上课讲的，SSE 指令集有共有八个128位的寄存器 xmm0 ~ xmm7，因此一个寄存器可以存放 4 个 32 位的数据（如 int, float），并利用指令同时进行一个寄存器（四个 32 位数据）的运算。例如：
 
@@ -59,7 +59,7 @@ int main()
 }
 ```
 
-<h4 id="optimization1">sad_block_8x8 函数的优化</h4>
+<h2 id="optimization1">sad_block_8x8 函数的优化</h2>
 
 c63_motion_estimate -> me_block_8x8 -> me_block_8x8 -> sad_block_8x8
 
@@ -129,7 +129,7 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 
 
 
-<h3 id="shell">执行指令</h3>
+<h1 id="shell">执行指令</h1>
 
 **compile**
 
@@ -157,14 +157,14 @@ $ vlc --rawvid-width 352 --rawvid-height 288 --rawvid-fps 30 --rawvid-chroma I42
 
 
 
-<h3 id="log">日志记录（碎碎念）</h3>
+<h1 id="log">日志记录（碎碎念）</h1>
 
-<h4>2018/12/12</h4>
+<h3>2018/12/12</h3>
 
 首先根据给的word文档试运行了代码，一开始发现编译不过去，然后修改Makefile文件，把ldflag放到了最后。
 发现用Makefile-new编译的话，用c63dec解码后视频会变模糊和绿屏，去掉-DC63_PRED就不会了。
 
-<h4>2018/12/13</h4>
+<h3>2018/12/13</h3>
 
 最初尝试：从c63enc.c文件的main函数开始查看代码，main -> c63_encode_image -> dct_quantize -> dct_quantize_row, 看到循环存在，尝试用 SSE 指令集优化最内层的8个j循环。想法就是一次性往128位的寄存器载入4个数据进行计算，但在做的途中发现图像的数组每一个元素都是一个字节(8位)而不是32位，正常做法无法直接载入数据。我把数据量类型强制转化为 float 尝试，但结果处理速度比原来慢不说，视频质量也非常非常的差。代码如下：
 ```c
