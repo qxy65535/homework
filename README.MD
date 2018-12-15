@@ -3,8 +3,8 @@
 #### - [更新内容](#update)
 #### - [优化说明](#optimization)
 - [SSE 指令简单说明](#sse)
-- [sad_block_8x8 函数的优化v1](#optimization1)
-- [sad_block_8x8 函数的优化v2.3](#optimization2)
+- [sad\_block\_8x8 函数的优化v1](#optimization1)
+- [sad\_block\_8x8 函数的优化v2.3](#optimization2)
 - [原版代码 BUG 解决](#bug)
 #### - [优化结果](#result)
 #### - [执行指令](#shell)
@@ -16,7 +16,7 @@
 
 <h4>2018/12/15   13:26</h4>
 
-更新有关 c63enc.c 存在的 bug 说明，优化了 sad_block_8x8 (v2.3) 并写了优化说明。正在写优化结果对比。
+更新有关 c63enc.c 存在的 bug 说明，优化了 sad\_block\_8x8 (v2.3) 并写了优化说明。正在写优化结果对比。
 
 <h4>2018/12/14</h4>
 
@@ -24,7 +24,7 @@
 
 <h4>2018/12/13</h4>
 
-初次提交，优化了 sad_block_8x8 (v1)，写了相关 md 说明
+初次提交，优化了 sad\_block\_8x8 (v1)，写了相关 md 说明
 
 
 
@@ -82,9 +82,9 @@ int main()
 
 <h3 id="optimization1">sad_block_8x8 函数的优化v1</h3>
 
-c63_motion_estimate -> me_block_8x8 -> me_block_8x8 -> sad_block_8x8
+c63\_motion\_estimate -> me\_block\_8x8 -> me\_block\_8x8 -> sad\_block\_8x8
 
-首先根据查看各个主要步骤的执行时间，发现最耗时的操作为 c63_motion_estimate()。跟进运行步骤，查找到其中最主要的步骤是 sad_block_8x8()，它为最内层的循环，执行了非常多的次数，所以我选择它作为最初的优化目标。它的原版代码如下：
+首先根据查看各个主要步骤的执行时间，发现最耗时的操作为 c63\_motion\_estimate()。跟进运行步骤，查找到其中最主要的步骤是 sad\_block\_8x8()，它为最内层的循环，执行了非常多的次数，所以我选择它作为最初的优化目标。它的原版代码如下：
 
 ```c
 // 原始代码
@@ -99,7 +99,7 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 }
 ```
 
-内层的 u 循环将两个 block 中的八个连续数据相减取绝对值并累加。因此最先想到的是，可以利用 SSE 的思想将最内层的数据打包一起运算，u = 0, 1, 2, 3 为一组运算，u = 4, 5, 6, 7 为一组运算。但在实际操作过程中发现，[SSE 指令简单说明](#sse) 处的代码是将四个 32 位的数据打包，但是这段代码里由于图像处理的特殊情况，每个数据都是 uint8_t 类型，即 8 位，而且 u 层循环一共处理八个数据，即 8*8=64 位。SSE 指令集在批量存取和计算的数据为 16 字节（128位）对齐的时候效率才是最高的，也没有针对每个单元为 1 字节的数组特定的存取办法，因此数据的存取方法、运算方法等是这里要解决的关键问题。
+内层的 u 循环将两个 block 中的八个连续数据相减取绝对值并累加。因此最先想到的是，可以利用 SSE 的思想将最内层的数据打包一起运算，u = 0, 1, 2, 3 为一组运算，u = 4, 5, 6, 7 为一组运算。但在实际操作过程中发现，[SSE 指令简单说明](#sse) 处的代码是将四个 32 位的数据打包，但是这段代码里由于图像处理的特殊情况，每个数据都是 uint8\_t 类型，即 8 位，而且 u 层循环一共处理八个数据，即 8*8=64 位。SSE 指令集在批量存取和计算的数据为 16 字节（128位）对齐的时候效率才是最高的，也没有针对每个单元为 1 字节的数组特定的存取办法，因此数据的存取方法、运算方法等是这里要解决的关键问题。
 
 **涉及指令介绍**
 
@@ -127,7 +127,7 @@ int _mm_cvtsi128_si32(__m128i xmm)
 */
 ```
 
-**修改后 sad_block_8x8 内部代码**
+**修改后 sad\_block\_8x8 内部代码**
 
 ```c
 // 改进后 v1
@@ -144,11 +144,11 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 }
 ```
 
-首先用 int64_t 类型的指针指向 block 数据块的当前位置。指针取出一块数据的长度与指针类型有关，因此 int64_t 类型的指针能一次性取出 block 数据块中 64 位（8 字节）的数据，即一次 u 循环中所有的 8 个数据，避免用 int8_t 类型多次取数据造成的性能浪费。然后利用 _mm_cvtsi64_si128 将 block1 和 block2 中的 8bit*8=64bit 数据分别载入 xmm1 和 xmm2 的低 64 位 ，并利用 _mm_sad_epu8 将两个寄存器的每 8 位相减求绝对值之和写入 xmm3，最后用 _mm_cvtsi128_si32 取出 xmm3 的低 32 位与 int 型的 result 累加。这样就去掉了内层的八次循环，并实现了八个数据的同时运算。
+首先用 int64\_t 类型的指针指向 block 数据块的当前位置。指针取出一块数据的长度与指针类型有关，因此 int64\_t 类型的指针能一次性取出 block 数据块中 64 位（8 字节）的数据，即一次 u 循环中所有的 8 个数据，避免用 int8\_t 类型多次取数据造成的性能浪费。然后利用 \_mm\_cvtsi64\_si128 将 block1 和 block2 中的 8bit\*8=64bit 数据分别载入 xmm1 和 xmm2 的低 64 位 ，并利用 \_mm\_sad\_epu8 将两个寄存器的每 8 位相减求绝对值之和写入 xmm3，最后用 \_mm\_cvtsi128\_si32 取出 xmm3 的低 32 位与 int 型的 result 累加。这样就去掉了内层的八次循环，并实现了八个数据的同时运算。
 
 <h3 id="optimization2">sad_block_8x8 函数的优化v2.3</h3>
 
-由于对 sad_block_8x8() 这个函数的再优化经历了两个失败版本所以取名为 v2.3。
+由于对 sad\_block\_8x8() 这个函数的再优化经历了两个失败版本所以取名为 v2.3。
 
 首先是觉得128位的寄存器没有完全利用（只利用了低64位存放8个数据），想把它占满同时运算16个数据，失败；然后是想到循环展开，利用八个寄存器进行四倍的循环展开，也失败。在研究代码后发现取数据占用了相当大的时间，因此考虑尽量减少从寄存器取出数据的次数，从而减少时间开销。
 
@@ -206,7 +206,7 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 
 在初测试过程中发现了编码 1080p 的视频时，在 ubuntu on windows 上会报段错误，而在虚拟机的 ubuntu 18.04 上不会的问题。
 
-跟进到代码里，发现是 common.c: dct_quantize_row() 中的
+跟进到代码里，发现是 common.c: dct\_quantize\_row() 中的
 
 ```c
 block[i*8+j] = ((int16_t)in_data[i*w+j+x] - prediction[i*w+j+x]);
@@ -247,11 +247,11 @@ void dct_quantize_row(uint8_t *in_data, uint8_t *prediction, int w, int h,
 }
 ```
 
-根据传参，1920*1080的视频 width 为 1920，height 为1080，padw 为1920，padh 为1088。review 调用这里的函数，此处传参的 width，height，w，h 都是 padw 和 padh。
+根据传参，1920\*1080的视频 width 为 1920，height 为1080，padw 为1920，padh 为1088。review 调用这里的函数，此处传参的 width，height，w，h 都是 padw 和 padh。
 
-dct_quantize_row() 函数中 in_data 的起始地址为 in_data+y\*width， y 最大取值1080，因此 in_data 的起始地址最大为 in_data+1080*1920。在接下来的调用里还要访问 in_data[i\*w+j+x] 的地址，而 in_data 作为 image->Y，在 c63enc.c 中可以看到 image->Y = malloc(width\*height)，它只有 width\*height=1920\*1080 个字节的长度。因此此处的访问必然导致越界。ubuntu on windows 的报错是没有问题的，反而虚拟机中 ubuntu 不报错比较奇怪。（ubuntu on windows 中 gcc 版本为 5.4.0，虚拟机的 ubuntu 中 gcc 版本为 7.3.0，目前不清楚有没有关系）
+dct\_quantize\_row() 函数中 in\_data 的起始地址为 in\_data+y\*width， y 最大取值1080，因此 in\_data 的起始地址最大为 in\_data+1080\*1920。在接下来的调用里还要访问 in\_data[i\*w+j+x] 的地址，而 in\_data 作为 image->Y，在 c63enc.c 中可以看到 image->Y = malloc(width\*height)，它只有 width\*height=1920\*1080 个字节的长度。因此此处的访问必然导致越界。ubuntu on windows 的报错是没有问题的，反而虚拟机中 ubuntu 不报错比较奇怪。
 
-然后打印了一下 log：（dct_quantize_row() 函数中 i\*w+j+x 可取的最大值为15359）
+然后打印了一下 log：（dct\_quantize\_row() 函数中 i\*w+j+x 可取的最大值为15359）
 
 ```c
 void dct_quantize(uint8_t *in_data, uint8_t *prediction,
@@ -290,7 +290,7 @@ in_data: 2076656, in_data+y*width+15359:15359
 
 **问题解决**
 
-参考 mjpeg_encoder.c 里的算法修正了一下 c63enc.c，DCT 和量化中不再使用 padw 和 padh 而是使用原始的 width 和 height。具体修正如下：
+参考 mjpeg\_encoder.c 里的算法修正了一下 c63enc.c，DCT 和量化中不再使用 padw 和 padh 而是使用原始的 width 和 height。具体修正如下：
 
 ```c
 // c63enc.c
@@ -316,7 +316,7 @@ dct_quantize(image->V, cm->curframe->predicted->V, cm->width*VX/YX, cm->height*V
 | :--------------------------: | ----------- | ----------- | ---- |
 |           原始代码           |             |             |      |
 |  sad_block_8x8 函数的优化v1  | 4.32s       | 209.87s     |      |
-| sad_block_8x8 函数的优化v2.3 |             |             |      |
+| sad_block_8x8 函数的优化v2.3 | 3.73s       | 180.13s     |      |
 
 
 
@@ -355,11 +355,11 @@ $ vlc --rawvid-width 1920 --rawvid-height 1080 --rawvid-fps 30 --rawvid-chroma I
 <h4>2018/12/12</h4>
 
 首先根据给的word文档试运行了代码，一开始发现编译不过去，然后修改Makefile文件，把ldflag放到了最后。
-发现用Makefile-new编译的话，用c63dec解码后视频会变模糊和绿屏，去掉-DC63_PRED就不会了。
+发现用Makefile-new编译的话，用c63dec解码后视频会变模糊和绿屏，去掉-DC63\_PRED就不会了。
 
 <h4>2018/12/13</h4>
 
-最初尝试：从c63enc.c文件的main函数开始查看代码，main -> c63_encode_image -> dct_quantize -> dct_quantize_row, 看到循环存在，尝试用 SSE 指令集优化最内层的8个j循环。想法就是一次性往128位的寄存器载入4个数据进行计算，但在做的途中发现图像的数组每一个元素都是一个字节(8位)而不是32位，正常做法无法直接载入数据。我把数据量类型强制转化为 float 尝试，但结果处理速度比原来慢不说，视频质量也非常非常的差。代码如下：
+最初尝试：从c63enc.c文件的main函数开始查看代码，main -> c63_encode_image -> dct\_quantize -> dct\_quantize\_row, 看到循环存在，尝试用 SSE 指令集优化最内层的8个j循环。想法就是一次性往128位的寄存器载入4个数据进行计算，但在做的途中发现图像的数组每一个元素都是一个字节(8位)而不是32位，正常做法无法直接载入数据。我把数据量类型强制转化为 float 尝试，但结果处理速度比原来慢不说，视频质量也非常非常的差。代码如下：
 ```c
 
 mm_in_data = _mm_set_ps((float)in_data[i*w+0+x], (float)in_data[i*w+1+x], 
@@ -385,11 +385,11 @@ block[i*8+6] = (int16_t) result[2];
 block[i*8+7] = (int16_t) result[3];
 ```
 
-然后在代码的各个部分加clock()函数查看各个计算耗费的时间，发现编码一个帧大约需要88000左右个时钟，而c63_motion_estimate这一步需要约84000个时钟。显然编码中最耗时的操作在这里，之前修改的dct_quantize仅需要1300左右个时钟，对整体而言只占非常小一部分的时间。因此，就算在那边负优化了，也决定从运动估计最先下手。虽然还不知道运动估计是什么。
+然后在代码的各个部分加clock()函数查看各个计算耗费的时间，发现编码一个帧大约需要88000左右个时钟，而c63_motion_estimate这一步需要约84000个时钟。显然编码中最耗时的操作在这里，之前修改的dct\_quantize仅需要1300左右个时钟，对整体而言只占非常小一部分的时间。因此，就算在那边负优化了，也决定从运动估计最先下手。虽然还不知道运动估计是什么。
 
 ↑以上是在ubuntu虚拟机的工作。后来实在卡的受不了了。。转到windows下工作。。编译使用的是windows的ubuntu子系统。速度（时钟）有偏差，但依然是运动估计占大头。
 
-从 c63_motion_estimate -> me_block_8x8 -> me_block_8x8 -> sad_block_8x8 下手。
+从 c63\_motion\_estimate -> me\_block\_8x8 -> me\_block\_8x8 -> sad\_block\_8x8 下手。
 写了个 test.c 测试一些想法的可行性，以及不同数据类型的取数据范围之类的小细节。
 
 卧槽。。。好像速度有点不得了。。。但是 .c63 文件大了好多是怎么回事。。
@@ -407,11 +407,11 @@ block[i*8+7] = (int16_t) result[3];
 
 <h4>2018/12/14</h4>
 
-跟进到代码里，找到出错行后，发现按照这个代码的写法必然出现数组访问越界，反而是不报错的那方比较奇怪。参考 mjpeg_encoder.c 里的算法修正了一下 c63enc.c，在测试后发现两个平台下都能跑通了。而且编码后的文件能被正常解码，解码后的视频能正常播放。具体问题和做法参考 [原版代码 BUG 解决](#bug)
+跟进到代码里，找到出错行后，发现按照这个代码的写法必然出现数组访问越界，反而是不报错的那方比较奇怪。参考 mjpeg\_encoder.c 里的算法修正了一下 c63enc.c，在测试后发现两个平台下都能跑通了。而且编码后的文件能被正常解码，解码后的视频能正常播放。具体问题和做法参考 [原版代码 BUG 解决](#bug)
 
 此外还有个小小的不算问题的事儿，就是发现虚拟机的 ubuntu 比 windows 下的 ubuntu 运算要更快点，为什么呢。
 
-在改进的 sad_block_8x8 基础上尝试了用两组数据填满一个128位的寄存器，使外层循环只需要循环一半的次数。尝试了 v2：先将八个占低64位数据扩充到16位填充到整个寄存器再通过 pack 将两个寄存器打包使一个128位寄存器中有16个8位数据；以及 v3：用 set 指令将四个 int 型数据填充到128位寄存器中，但效率都没有第一版优化高。另外似乎在 cflag 中使用 -msse4 时速度会变慢，不知何解。
+在改进的 sad\_block\_8x8 基础上尝试了用两组数据填满一个128位的寄存器，使外层循环只需要循环一半的次数。尝试了 v2：先将八个占低64位数据扩充到16位填充到整个寄存器再通过 pack 将两个寄存器打包使一个128位寄存器中有16个8位数据；以及 v3：用 set 指令将四个 int 型数据填充到128位寄存器中，但效率都没有第一版优化高。另外似乎在 cflag 中使用 -msse4 时速度会变慢，不知何解。
 
 然后想到了利用循环展开的思想。循环展开四倍，但是发现效果仍不理想，没有明显改进甚至有点变慢。
 

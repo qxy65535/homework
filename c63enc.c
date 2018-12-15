@@ -186,6 +186,10 @@ int main(int argc, char **argv)
     int c;
     yuv_t *image;
 
+    FILE *f_log = NULL;
+    int begin, end;
+    int start, stop;
+
     if(argc == 1)
     {
         print_help();
@@ -227,6 +231,8 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
+    f_log = fopen("total_time.log", "a");
+    start = clock();
 
     struct c63_common *cm = init_c63_enc(width, height);
     cm->e_ctx.fp = outfile;
@@ -256,9 +262,7 @@ int main(int argc, char **argv)
 
     /* Encode input frames */
     int numframes = 0;
-    int begin, end;
-    int start, stop;
-    start = clock();
+
     while(!feof(infile))
     {
         begin = clock();
@@ -284,10 +288,13 @@ int main(int argc, char **argv)
             break;
     }
     stop = clock();
-    printf("clock tick: %.2f\n", (float)(stop-start)/CLOCKS_PER_SEC);
+    printf("total time: %.2f\n", (float)(stop-start)/CLOCKS_PER_SEC);
+    fprintf(f_log, "total time: %.2f\n", (float)(stop-start)/CLOCKS_PER_SEC);
 
     fclose(outfile);
     fclose(infile);
+    fclose(f_log);
+    
 //
 //    int i,j;
 //    for (i=0; i<2; ++i)
