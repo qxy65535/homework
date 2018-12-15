@@ -1,12 +1,32 @@
 
 ## 目录
+#### - [更新内容](#update)
 #### - [优化说明](#optimization)
 - [SSE 指令简单说明](#sse)
-- [sad_block_8x8 函数的优化](#optimization1)
+- [sad_block_8x8 函数的优化v1](#optimization1)
+- [sad_block_8x8 函数的优化v2.3](#optimization2)
 - [原版代码 BUG 解决](#bug)
-
+#### - [优化结果](#result)
 #### - [执行指令](#shell)
 #### - [日志记录（碎碎念）](#log)
+
+
+
+<h2 id="update">更新内容</h2>
+
+<h4>2018/12/15   13:26</h4>
+
+更新有关 c63enc.c 存在的 bug 说明，优化了 sad_block_8x8 (v2.3) 并写了优化说明。正在写优化结果对比。
+
+<h4>2018/12/14</h4>
+
+找到并修正了 c63enc.c 存在的 bug（会导致 common.c 中数组访问越界），写了相关说明
+
+<h4>2018/12/13</h4>
+
+初次提交，优化了 sad_block_8x8 (v1)，写了相关 md 说明
+
+
 
 
 <h2 id="optimization">优化说明</h2>
@@ -23,7 +43,7 @@ int main()
 {
     float a[4] = {0,1,2,3};
     float b[4] = {4,5,6,7};
-	float c[4];
+    float c[4];
     
     __m128 xmm0 = _mm_load_ps(a); // 载入指针 a 所指向的四个数据到寄存器
     /* xmm0:
@@ -60,15 +80,14 @@ int main()
 }
 ```
 
-<h3 id="optimization1">sad_block_8x8 函数的优化</h3>
+<h3 id="optimization1">sad_block_8x8 函数的优化v1</h3>
 
 c63_motion_estimate -> me_block_8x8 -> me_block_8x8 -> sad_block_8x8
-
-
 
 首先根据查看各个主要步骤的执行时间，发现最耗时的操作为 c63_motion_estimate()。跟进运行步骤，查找到其中最主要的步骤是 sad_block_8x8()，它为最内层的循环，执行了非常多的次数，所以我选择它作为最初的优化目标。它的原版代码如下：
 
 ```c
+// 原始代码
 void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 {
     *result = 0;
@@ -111,15 +130,14 @@ int _mm_cvtsi128_si32(__m128i xmm)
 **修改后 sad_block_8x8 内部代码**
 
 ```c
+// 改进后 v1
 void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 {
     *result = 0;
-    int u,v;
+    int v;
     for (v=0; v<8; ++v) {
-        int64_t *block2_8 = block2+v*stride;
-        int64_t *block1_8 = block1+v*stride;
-        __m128i xmm2 = _mm_cvtsi64_si128(*block2_8);
-        __m128i xmm1 = _mm_cvtsi64_si128(*block1_8);
+        __m128i xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+v*stride));
+        __m128i xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+v*stride));
         __m128i xmm3 = _mm_sad_epu8(xmm2, xmm1);
         *result += _mm_cvtsi128_si32(xmm3);
     }
@@ -127,6 +145,60 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 ```
 
 首先用 int64_t 类型的指针指向 block 数据块的当前位置。指针取出一块数据的长度与指针类型有关，因此 int64_t 类型的指针能一次性取出 block 数据块中 64 位（8 字节）的数据，即一次 u 循环中所有的 8 个数据，避免用 int8_t 类型多次取数据造成的性能浪费。然后利用 _mm_cvtsi64_si128 将 block1 和 block2 中的 8bit*8=64bit 数据分别载入 xmm1 和 xmm2 的低 64 位 ，并利用 _mm_sad_epu8 将两个寄存器的每 8 位相减求绝对值之和写入 xmm3，最后用 _mm_cvtsi128_si32 取出 xmm3 的低 32 位与 int 型的 result 累加。这样就去掉了内层的八次循环，并实现了八个数据的同时运算。
+
+<h3 id="optimization2">sad_block_8x8 函数的优化v2.3</h3>
+
+由于对 sad_block_8x8() 这个函数的再优化经历了两个失败版本所以取名为 v2.3。
+
+首先是觉得128位的寄存器没有完全利用（只利用了低64位存放8个数据），想把它占满同时运算16个数据，失败；然后是想到循环展开，利用八个寄存器进行四倍的循环展开，也失败。在研究代码后发现取数据占用了相当大的时间，因此考虑尽量减少从寄存器取出数据的次数，从而减少时间开销。
+
+具体代码如下：
+
+```c
+// 改进后 v2.3
+void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+{
+    *result = 0;
+    int v;
+    for (v=0; v<8; v+=4) {
+        uint8_t *block1_cur = block1+v*stride;
+        uint8_t *block2_cur = block2+v*stride;
+        int pos = v*stride;
+        __m128i xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        __m128i xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm1 = _mm_sad_epu8(xmm1, xmm0);
+        // *result += _mm_cvtsi128_si32(xmm1);
+
+        block1_cur += stride;
+        block2_cur += stride;
+        __m128i xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        __m128i xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm3 = _mm_sad_epu8(xmm3, xmm2);
+        // *result += _mm_cvtsi128_si32(xmm3);
+
+        block1_cur += stride;
+        block2_cur += stride;
+        __m128i xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        __m128i xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm5 = _mm_sad_epu8(xmm5, xmm4);
+        // *result += _mm_cvtsi128_si32(xmm5);
+
+        block1_cur += stride;
+        block2_cur += stride;
+        __m128i xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        __m128i xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm7 = _mm_sad_epu8(xmm7, xmm6);
+
+        // 累加，一次性加回result，即只读回一次
+        xmm1 = _mm_add_epi32(xmm1, xmm3);
+        xmm5 = _mm_add_epi32(xmm5, xmm7);
+        xmm7 = _mm_add_epi32(xmm1, xmm5);
+        *result += _mm_cvtsi128_si32(xmm7);
+    }
+}
+```
+
+局限于7个 xmm 寄存器，最多进行四倍的循环展开，与此同时利用 SSE 的 add 指令，可以减少四分之三的数据取回。add 这个地方其实只需要用到寄存器的前32位，感觉还是存在一些浪费，但目前比较没辙。
 
 <h3 id="bug">原版代码 BUG 解决</h3>
 
@@ -179,6 +251,43 @@ void dct_quantize_row(uint8_t *in_data, uint8_t *prediction, int w, int h,
 
 dct_quantize_row() 函数中 in_data 的起始地址为 in_data+y\*width， y 最大取值1080，因此 in_data 的起始地址最大为 in_data+1080*1920。在接下来的调用里还要访问 in_data[i\*w+j+x] 的地址，而 in_data 作为 image->Y，在 c63enc.c 中可以看到 image->Y = malloc(width\*height)，它只有 width\*height=1920\*1080 个字节的长度。因此此处的访问必然导致越界。ubuntu on windows 的报错是没有问题的，反而虚拟机中 ubuntu 不报错比较奇怪。（ubuntu on windows 中 gcc 版本为 5.4.0，虚拟机的 ubuntu 中 gcc 版本为 7.3.0，目前不清楚有没有关系）
 
+然后打印了一下 log：（dct_quantize_row() 函数中 i\*w+j+x 可取的最大值为15359）
+
+```c
+void dct_quantize(uint8_t *in_data, uint8_t *prediction,
+        uint32_t width, uint32_t height,
+        int16_t *out_data, uint8_t *quantization)
+{
+    int y;
+    for (y=0; y<height; y+=8)
+    {
+        printf("in_data: %ld, in_data+y*width+15359: %d\n", malloc_usable_size(in_data), y*width+15359);
+        dct_quantize_row(in_data+y*width, prediction+y*width, width, height, out_data+y*width, quantization);
+    }
+}
+```
+
+在 ubuntu on windows 的输出为
+
+```shell
+...
+in_data: 2076656, in_data+y*width+15359:2088959
+Segmentation fault (core dumped)
+qxy@qxy:/mnt/c/Users/saltyfish/Desktop/codec63-0.3/codec63$
+```
+
+在虚拟机的 ubuntu 的输出为
+
+```shell
+...
+in_data: 2076656, in_data+y*width+15359:2073599
+in_data: 2076656, in_data+y*width+15359:2088959
+in_data: 2076656, in_data+y*width+15359:15359
+...
+```
+
+同样地越界了，但是虚拟机 ubuntu 并不报错。在小组成员的共同测试下，只要是真正的 Linux 系统，无关 gcc 版本，都不会报错。推测可能是 ubuntu on windows 共享了 windows 的内存，导致两者内存中的内核空间和用户空间不太一样，因此只有 ubuntu on windows 访问到了会导致段错误的区域而真正的 Linux 系统虽越界但并没有段错误。
+
 **问题解决**
 
 参考 mjpeg_encoder.c 里的算法修正了一下 c63enc.c，DCT 和量化中不再使用 padw 和 padh 而是使用原始的 width 和 height。具体修正如下：
@@ -198,6 +307,18 @@ dct_quantize(image->V, cm->curframe->predicted->V, cm->width*VX/YX, cm->height*V
 ```
 
 经测试后发现两个平台下都能跑通了。而且编码后的文件能被正常解码，解码后的视频能正常播放。
+
+
+
+<h2 id="result">优化结果</h2>
+
+|                              | foreman.yuv | tractor.yuv | PSNR |
+| :--------------------------: | ----------- | ----------- | ---- |
+|           原始代码           |             |             |      |
+|  sad_block_8x8 函数的优化v1  | 4.32s       | 209.87s     |      |
+| sad_block_8x8 函数的优化v2.3 |             |             |      |
+
+
 
 <h2 id="shell">执行指令</h2>
 
@@ -289,3 +410,11 @@ block[i*8+7] = (int16_t) result[3];
 跟进到代码里，找到出错行后，发现按照这个代码的写法必然出现数组访问越界，反而是不报错的那方比较奇怪。参考 mjpeg_encoder.c 里的算法修正了一下 c63enc.c，在测试后发现两个平台下都能跑通了。而且编码后的文件能被正常解码，解码后的视频能正常播放。具体问题和做法参考 [原版代码 BUG 解决](#bug)
 
 此外还有个小小的不算问题的事儿，就是发现虚拟机的 ubuntu 比 windows 下的 ubuntu 运算要更快点，为什么呢。
+
+在改进的 sad_block_8x8 基础上尝试了用两组数据填满一个128位的寄存器，使外层循环只需要循环一半的次数。尝试了 v2：先将八个占低64位数据扩充到16位填充到整个寄存器再通过 pack 将两个寄存器打包使一个128位寄存器中有16个8位数据；以及 v3：用 set 指令将四个 int 型数据填充到128位寄存器中，但效率都没有第一版优化高。另外似乎在 cflag 中使用 -msse4 时速度会变慢，不知何解。
+
+然后想到了利用循环展开的思想。循环展开四倍，但是发现效果仍不理想，没有明显改进甚至有点变慢。
+
+<h4>2018/12/15</h4>
+
+在继续观察代码后，发现从128位寄存器取数据是个非常耗时间的操作（读数据不可避，而且想不到办法优化了），因此在循环展开四倍的基础上，将取回数据的操作只进行一次。经测试这样做之后编码时间又减少了不少。

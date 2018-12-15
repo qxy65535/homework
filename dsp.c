@@ -162,22 +162,154 @@ void dequant_idct_block_8x8(int16_t *in_data, int16_t *out_data, uint8_t *quant_
         out_data[i] = mb[i];
 }
 
+// 原始代码
+// void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+// {
+//     *result = 0;
+
+//     int u,v;
+//     for (v=0; v<8; ++v)
+//         for (u=0; u<8; ++u)
+//             *result += abs(block2[v*stride+u] - block1[v*stride+u]);
+// }
+
+// 改进后 v1
+// void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+// {
+//     *result = 0;
+//     int v;
+//     int res[4];
+//     for (v=0; v<8; ++v) {
+//         __m128i xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+v*stride));
+//         __m128i xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+v*stride));
+//         __m128i xmm3 = _mm_sad_epu8(xmm2, xmm1);
+//         _mm_store_ps(res, xmm3)
+//         *result += res[0];
+//     }
+// }
+
+// 改进后 v2.3
 void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 {
     *result = 0;
-    // uint8_t *tmp_block2 = block2;
-    int u,v;
-    for (v=0; v<8; ++v) {
-        // for (u=0; u<8; ++u) {
-            // *result += abs(block2[v*stride+u] - block1[v*stride+u]);
-            int64_t *block2_8 = block2+v*stride;
-            int64_t *block1_8 = block1+v*stride;
-            __m128i xmm2 = _mm_cvtsi64_si128(*block2_8);
-            __m128i xmm1 = _mm_cvtsi64_si128(*block1_8);
-            __m128i xmm3 = _mm_sad_epu8(xmm2, xmm1);
-            *result += _mm_cvtsi128_si32(xmm3);
-            // *result += result_tmp;
+    int v;
+    for (v=0; v<8; v+=4) {
+        uint8_t *block1_cur = block1+v*stride;
+        uint8_t *block2_cur = block2+v*stride;
 
-        // }
+        __m128i xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        __m128i xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm1 = _mm_sad_epu8(xmm1, xmm0);
+        // *result += _mm_cvtsi128_si32(xmm1);
+
+        block1_cur += stride;
+        block2_cur += stride;
+        __m128i xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        __m128i xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm3 = _mm_sad_epu8(xmm3, xmm2);
+        // *result += _mm_cvtsi128_si32(xmm3);
+
+        block1_cur += stride;
+        block2_cur += stride;
+        __m128i xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        __m128i xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm5 = _mm_sad_epu8(xmm5, xmm4);
+        // *result += _mm_cvtsi128_si32(xmm5);
+
+        block1_cur += stride;
+        block2_cur += stride;
+        __m128i xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        __m128i xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm7 = _mm_sad_epu8(xmm7, xmm6);
+
+        // 累加，一次性加回result，即只读回一次
+        xmm1 = _mm_add_epi32(xmm1, xmm3);
+        xmm5 = _mm_add_epi32(xmm5, xmm7);
+        xmm7 = _mm_add_epi32(xmm1, xmm5);
+        *result += _mm_cvtsi128_si32(xmm7);
     }
 }
+
+//  改进后 v2 ← 可能因为操作变多了，失败。弃。
+// void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+// {
+//     *result = 0;
+//     int v;
+//     for (v=0; v<8; v+=2) {
+//         int64_t *block2_8 = block2+v*stride;
+//         int64_t *block1_8 = block1+v*stride;
+
+//         // 填充各寄存器的低64位
+//         __m128i xmm1 = _mm_cvtsi64_si128(*block1_8);
+//         __m128i xmm2 = _mm_cvtsi64_si128(*block2_8);
+//         __m128i xmm3 = _mm_cvtsi64_si128(*(block1+(v+1)*stride));
+//         __m128i xmm4 = _mm_cvtsi64_si128(*(block2+(v+1)*stride));
+
+//         // 扩充每个数据从8位到16位，高位写0，8个数据占满整个寄存器
+//         xmm1 = _mm_cvtepi8_epi16(xmm1);
+//         xmm2 = _mm_cvtepi8_epi16(xmm2);
+//         xmm3 = _mm_cvtepi8_epi16(xmm3);
+//         xmm4 = _mm_cvtepi8_epi16(xmm4);
+
+//         // 打包，将xmm1 xmm3，xmm2 xmm4中的共16个数据作为8位一个数据分别填充到xmm5 xmm6中
+//         // 此时，xmm5和xmm6中都有16个数据，完全利用整个寄存器
+//         __m128i xmm5 = _mm_packus_epi16(xmm1, xmm3);
+//         __m128i xmm6 = _mm_packus_epi16(xmm2, xmm4);
+        
+//         // 求差取绝对值后求和，作为16位数据写入r0, r4
+//         __m128i xmm7 = _mm_sad_epu8(xmm6, xmm5);
+
+//         // 取出数据
+//         uint16_t *val = (uint16_t*) &xmm7;
+//         *result = *result + val[0] + val[4];
+//     }
+// }
+
+// 改进后 v2.1 ← 也变慢了，弃
+// void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+// {
+//     *result = 0;
+//     int v;
+//     for (v=0; v<8; v+=4) {
+//         int pos = v*stride;
+//         __m128i xmm0 = _mm_set_epi32(*(int*)(block1+pos+stride+4), *(int*)(block1+pos+stride), *(int*)(block1+pos+4), *(int*)(block1+pos));
+//         __m128i xmm1 = _mm_set_epi32(*(int*)(block2+pos+stride+4), *(int*)(block2+pos+stride), *(int*)(block2+pos+4), *(int*)(block2+pos));
+//         // 求差取绝对值后求和，作为16位数据写入r0, r4
+//         __m128i xmm2 = _mm_sad_epu8(xmm1, xmm0);
+
+//         __m128i xmm3 = _mm_set_epi32(*(int*)(block1+pos+3*stride+4), *(int*)(block1+pos+3*stride), *(int*)(block1+pos+2*stride+4), *(int*)(block1+2*stride+pos));
+//         __m128i xmm4 = _mm_set_epi32(*(int*)(block2+pos+3*stride+4), *(int*)(block2+pos+3*stride), *(int*)(block2+pos+2*stride+4), *(int*)(block2+2*stride+pos));
+//         // 求差取绝对值后求和，作为16位数据写入r0, r4
+//         __m128i xmm5 = _mm_sad_epu8(xmm4, xmm3);
+
+
+//         __m128i xmm6 = _mm_add_epi32(xmm2, xmm5);
+
+//         // 取出数据
+//         int val[4];
+//         // _mm_store_si128(val, xmm6);
+//         // *result = *result + val[0] + val[2];
+//     }
+// }
+
+// 改进后 v2.2 ← 循环展开 也慢
+// void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+// {
+//     *result = 0;
+//     int v;
+//     for (v=0; v<8; v+=2) {
+//         uint8_t *block2_8 = block2+v*stride;
+//         uint8_t *block1_8 = block1+v*stride;
+
+//         __m128i xmm1 = _mm_cvtsi64_si128(*(int64_t*)block1_8);
+//         __m128i xmm2 = _mm_cvtsi64_si128(*(int64_t*)block2_8);
+//         __m128i xmm3 = _mm_sad_epu8(xmm2, xmm1);
+//         *result += _mm_cvtsi128_si32(xmm3);
+
+//         __m128i xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1+stride));
+//         __m128i xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2+stride));
+//         __m128i xmm6 = _mm_sad_epu8(xmm5, xmm4);
+//         *result += _mm_cvtsi128_si32(xmm6);
+//     }
+// }
+
