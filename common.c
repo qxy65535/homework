@@ -69,39 +69,9 @@ void dct_quantize_row(uint8_t *in_data, uint8_t *prediction, int w, int h,
 
         /* Store MBs linear in memory, i.e. the 64 coefficients are stored continous.
          * This allows us to ignore stride in DCT/iDCT and other functions. */
-        int start = clock();
         dct_quant_block_8x8(block, out_data+(x*8), quantization);
-        printf("!!!%d!!!", clock()-start);
     }
 }
-
-// 改进后 v1
-// void dct_quantize_row(uint8_t *in_data, uint8_t *prediction, int w, int h,
-//         int16_t *out_data, uint8_t *quantization)
-// {
-//     int x;
-//     int16_t block[8*8];
-
-//     __m128i xmm_in_data, xmm_prediction, xmm_result;
-
-//     /* Perform the DCT and quantization */
-//     for(x = 0; x < w; x += 8)
-//     {
-//         int i,j;
-//         for (i=0; i<8; ++i) {
-
-//             xmm_in_data = _mm_cvtsi64_si128(*(int64_t*)(in_data+i*w+x));
-//             xmm_prediction = _mm_cvtsi64_si128(*(int64_t*)(prediction+i*w+x));
-//             xmm_result = _mm_sub_epi8(xmm_in_data, xmm_prediction);
-//             *(block+i*8) = _mm_cvtsi128_si64(xmm_result);
-
-//         }
-
-//         /* Store MBs linear in memory, i.e. the 64 coefficients are stored continous.
-//          * This allows us to ignore stride in DCT/iDCT and other functions. */
-//         dct_quant_block_8x8(block, out_data+(x*8), quantization);
-//     }
-// }
 
 void dct_quantize(uint8_t *in_data, uint8_t *prediction,
         uint32_t width, uint32_t height,

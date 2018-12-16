@@ -17,21 +17,49 @@ static void transpose_block(float *in_data, float *out_data)
         }
 }
 
+// 原始代码
+// static void dct_1d(float *in_data, float *out_data)
+// {
+//     int i,j;
+
+//     for (j=0; j<8; ++j)
+//     {
+//         float dct = 0;
+
+//         for (i=0; i<8; ++i)
+//         {
+//             dct += in_data[i] * dctlookup[i][j];
+//         }
+
+//         out_data[j] = dct;
+//     }
+// }
+
+//  改进后 v1
 static void dct_1d(float *in_data, float *out_data)
 {
-    int i,j;
+    int j;
+    __m128 xmm0_dct_03, xmm1_dct_48;
+    __m128 xmm2_in_data;
+    __m128 xmm3_out_data_03, xmm4_out_data_48;
+    xmm3_out_data_03 = xmm4_out_data_48 = _mm_setzero_ps();
 
     for (j=0; j<8; ++j)
     {
-        float dct = 0;
+        xmm0_dct_03 = _mm_load_ps(dctlookup[j]);
+        xmm1_dct_48 = _mm_load_ps(dctlookup[j]+4);
+        xmm2_in_data = _mm_load1_ps(in_data+j);
 
-        for (i=0; i<8; ++i)
-        {
-            dct += in_data[i] * dctlookup[i][j];
-        }
+        xmm0_dct_03 = _mm_mul_ps(xmm0_dct_03, xmm2_in_data);
+        xmm1_dct_48 = _mm_mul_ps(xmm1_dct_48, xmm2_in_data);
 
-        out_data[j] = dct;
+        xmm3_out_data_03 = _mm_add_ps(xmm3_out_data_03, xmm0_dct_03);
+        xmm4_out_data_48 = _mm_add_ps(xmm4_out_data_48, xmm1_dct_48);
     }
+
+    _mm_store_ps(out_data, xmm3_out_data_03);
+    _mm_store_ps(out_data+4, xmm4_out_data_48);
+
 }
 
 static void idct_1d(float *in_data, float *out_data)
@@ -51,7 +79,7 @@ static void idct_1d(float *in_data, float *out_data)
     }
 }
 
-
+// 原始代码
 static void scale_block(float *in_data, float *out_data)
 {
     int u,v;
@@ -68,6 +96,38 @@ static void scale_block(float *in_data, float *out_data)
         }
     }
 }
+
+// static void scale_block(float *in_data, float *out_data)
+// {
+//     int v;
+//     __m128 in_data_03, in_data_47;
+//     __m128 xmm_a1_0, xmm_a2_0;
+//     __m128 xmm_out_data03, xmm_out_data47;
+
+//     xmm_a1_0 = _mm_set_ps(1.0f, 1.0f, 1.0f, ISQRT2);
+//     // xmm_a1_1 = xmm_a2_1 = _mm_set1_ps(1.0f);
+//     xmm_a2_0 = _mm_set1_ps(ISQRT2);
+
+//     in_data_03 = _mm_load_ps(in_data);
+//     in_data_47 = _mm_load_ps(in_data+4);
+
+//     xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
+//     xmm_out_data03 = _mm_mul_ps(xmm_a2_0, xmm_out_data03);
+//     // xmm_out_data47 = _mm_mul_ps(xmm_a1_1, in_data_47);
+//     xmm_out_data47 = _mm_mul_ps(xmm_a2_0, in_data_47);
+
+//     /* Scale according to normalizing function */
+//     _mm_store_ps(out_data, xmm_out_data03);
+//     _mm_store_ps(out_data+4, xmm_out_data47);
+    
+//     for (v=1; v<8; ++v)
+//     {
+//         in_data_03 = _mm_load_ps(in_data+v*8);
+//         xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
+//         _mm_store_ps(out_data+v*8, xmm_out_data03);
+//     }
+// }
+
 
 static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
 {
@@ -162,7 +222,7 @@ void dequant_idct_block_8x8(int16_t *in_data, int16_t *out_data, uint8_t *quant_
         out_data[i] = mb[i];
 }
 
-// 原始代码
+// // 原始代码
 // void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 // {
 //     *result = 0;
@@ -178,55 +238,115 @@ void dequant_idct_block_8x8(int16_t *in_data, int16_t *out_data, uint8_t *quant_
 // {
 //     *result = 0;
 //     int v;
+//     __m128i res = _mm_setzero_si128();
 //     for (v=0; v<8; ++v) {
 //         __m128i xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+v*stride));
 //         __m128i xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+v*stride));
 //         __m128i xmm3 = _mm_sad_epu8(xmm2, xmm1);
-//         *result += _mm_cvtsi128_si32(xmm3);
+//         res = _mm_add_epi32(res, xmm3);
+        
 //     }
+//     *result = _mm_cvtsi128_si32(res);
 // }
 
-// 改进后 v2.3
+// 改进后 v2.4
 void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 {
     *result = 0;
     int v;
+    __m128i xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
+
     for (v=0; v<8; v+=4) {
         uint8_t *block1_cur = block1+v*stride;
         uint8_t *block2_cur = block2+v*stride;
 
-        __m128i xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
-        __m128i xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
         xmm1 = _mm_sad_epu8(xmm1, xmm0);
         // *result += _mm_cvtsi128_si32(xmm1);
 
         block1_cur += stride;
         block2_cur += stride;
-        __m128i xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
-        __m128i xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
         xmm3 = _mm_sad_epu8(xmm3, xmm2);
+
+        xmm1 = _mm_add_epi32(xmm1, xmm3);
         // *result += _mm_cvtsi128_si32(xmm3);
 
         block1_cur += stride;
         block2_cur += stride;
-        __m128i xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
-        __m128i xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
-        xmm5 = _mm_sad_epu8(xmm5, xmm4);
+        xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm4 = _mm_sad_epu8(xmm4, xmm3);
         // *result += _mm_cvtsi128_si32(xmm5);
 
         block1_cur += stride;
         block2_cur += stride;
-        __m128i xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
-        __m128i xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
-        xmm7 = _mm_sad_epu8(xmm7, xmm6);
+        
+        xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+        xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+        xmm6 = _mm_sad_epu8(xmm6, xmm5);
 
         // 累加，一次性加回result，即只读回一次
-        xmm1 = _mm_add_epi32(xmm1, xmm3);
-        xmm5 = _mm_add_epi32(xmm5, xmm7);
-        xmm7 = _mm_add_epi32(xmm1, xmm5);
-        *result += _mm_cvtsi128_si32(xmm7);
+        
+        xmm6 = _mm_add_epi32(xmm5, xmm6);
+        xmm5 = xmm7;
+        xmm7 = _mm_add_epi32(xmm1, xmm6);
+        // if (!v) {
+        //     xmm7 = _mm_add_epi32(xmm1, xmm5);
+        // } else {
+        //     xmm5 = _mm_add_epi32(xmm1, xmm5);
+        // }
+        
     }
+    xmm7 = _mm_add_epi32(xmm7, xmm5);
+    *result += _mm_cvtsi128_si32(xmm7);
 }
+
+
+// void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+// {
+//     *result = 0;
+//     int v;
+//     __m128i xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
+
+//     for (v=0; v<8; v+=4) {
+//         uint8_t *block1_cur = block1+v*stride;
+//         uint8_t *block2_cur = block2+v*stride;
+
+//         xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm1 = _mm_sad_epu8(xmm1, xmm0);
+//         // *result += _mm_cvtsi128_si32(xmm1);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm3 = _mm_sad_epu8(xmm3, xmm2);
+//         // *result += _mm_cvtsi128_si32(xmm3);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm5 = _mm_sad_epu8(xmm5, xmm4);
+//         // *result += _mm_cvtsi128_si32(xmm5);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm7 = _mm_sad_epu8(xmm7, xmm6);
+
+//         // 累加，一次性加回result，即只读回一次
+//         xmm1 = _mm_add_epi32(xmm1, xmm3);
+//         xmm5 = _mm_add_epi32(xmm5, xmm7);
+//         xmm7 = _mm_add_epi32(xmm1, xmm5);
+//         *result += _mm_cvtsi128_si32(xmm7);
+//     }
+// }
 
 //  改进后 v2 ← 可能因为操作变多了，失败。弃。
 // void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)

@@ -418,3 +418,104 @@ block[i*8+7] = (int16_t) result[3];
 <h4>2018/12/15</h4>
 
 在继续观察代码后，发现从128位寄存器取数据是个非常耗时间的操作（读数据不可避，而且想不到办法优化了），因此在循环展开四倍的基础上，将取回数据的操作只进行一次。经测试这样做之后编码时间又减少了不少。
+
+<h4>2018/12/16</h4>
+
+想不到 sad\_block\_8x8 还能怎么再优化了，所以回到 dct\_quantize 进行优化，因为除了 c63\_motion\_estimate，就数它和 dequantize\_idct 占用时间最久。本想着可能是因为第一次尝试时姿势不对，导致效率奇低完成负优化，于是又按照现在的想法对 dct\_quantize\_row 函数中的循环进行修改，修改如下：
+
+```c
+void dct_quantize_row(uint8_t *in_data, uint8_t *prediction, int w, int h,
+        int16_t *out_data, uint8_t *quantization)
+{
+    int x;
+    int16_t block[8*8];
+
+    __m128i xmm_in_data, xmm_prediction, xmm_result;
+    // __m128i zero = _mm_setzero_si128();
+
+    /* Perform the DCT and quantization */
+    for(x = 0; x < w; x += 8)
+    {
+        int i,j;
+        for (i=0; i<8; ++i) {
+
+            mm_in_data = _mm_cvtsi64_si128(*(int64_t*)(in_data+i*w+x));
+            xmm_prediction = _mm_cvtsi64_si128(*(int64_t*)(prediction+i*w+x));
+            xmm_result = _mm_sub_epi8(xmm_in_data, xmm_prediction);
+            xmm_result = _mm_unpacklo_epi8(xmm_result, zero);
+            int64_t p2 = _mm_cvtsi128_si64(xmm_result);
+            *(int64_t*)(block+i*8) = p2;
+            block[i*8+j]=1;
+
+        }
+
+        /* Store MBs linear in memory, i.e. the 64 coefficients are stored continous.
+         * This allows us to ignore stride in DCT/iDCT and other functions. */
+        dct_quant_block_8x8(block, out_data+(x*8), quantization);
+    }
+}
+```
+
+但结果依然是负优化的。想了想，会不会也是因为存取数据时间太长以至于完全掩盖了打包数据进行运算带来的时间优化，但这样就表明这段代码本身的时间占用就非常少。于是干脆用非常极端的方式，干脆不要做减法运算，而是把 block[i\*8+j] 每一个元素赋值为1，发现这样做后也并没有减少什么时间，证明了我的想法。然后尝试注解掉 dct\_quant\_block\_8x8(block, out\_data+(x\*8), quantization)，效果拔群。于是下一步决定放着上面的循环不动，去优化 dct\_quant\_block\_8x8。
+
+进入到函数，首先看到 dct\_1d，尝试优化它。该函数原始代码如下：
+
+```c
+static void dct_1d(float *in_data, float *out_data)
+{
+    int i,j;
+
+    for (j=0; j<8; ++j)
+    {
+        float dct = 0;
+
+        for (i=0; i<8; ++i)
+        {
+            dct += in_data[i] * dctlookup[i][j];
+        }
+
+        out_data[j] = dct;
+    }
+}
+```
+
+其中 dctlookup 为一个 float 类型的 8x8 矩阵硬编码在 tables.c 中。矩阵形如：
+
+x<sub>11</sub>　x<sub>12</sub>　...　x<sub>17</sub>　x<sub>18</sub>
+
+x<sub>21</sub>　x<sub>22</sub>　...　x<sub>27</sub>　x<sub>28</sub>
+
+...
+
+x<sub>81</sub>　x<sub>82</sub>　...　x<sub>87</sub>　x<sub>88</sub>
+
+这个代码需要把 dctlookup 中第 j 列的八个元素乘以某个数并累加，赋值到 out\_data 的第 j 个元素。
+
+利用 SSE 指令集，将 x<sub>11</sub>, x<sub>12</sub>, x<sub>13</sub>, x<sub>14</sub> 放入一个寄存器，x<sub>15</sub>, x<sub>16</sub>, x<sub>17</sub>, x<sub>18</sub> 放入另一个寄存器，与之相乘的元素均为 in\_data[1]，每轮寄存器数据分别累加，最后将两个寄存器内容分别取出并写回 out\_data 的对应位置。
+
+按这样的思路直接改完发现变慢了，注解某些代码尝试感觉是累加操作写的不太合适。那边占用里很多时间。
+
+
+
+
+
+
+
+
+out\_data[1] = in\_data[1]\*(x<sub>11</sub> + x<sub>12</sub> + ... + x<sub>17</sub> + x<sub>18</sub>)
+
+乘法可以用 SSE 指令四个数据为一批进行批量处理，即 x<sub>11</sub>, x<sub>12</sub>, x<sub>13</sub>, x<sub>14</sub> 放入一个寄存器，x<sub>15</sub>, x<sub>16</sub>, x<sub>17</sub>, x<sub>18</sub> 放入另一个寄存器分别与 in\_data[1] 进行乘法，再把结果相加，最后从寄存器取出四个数累加。这样每个写回 out\_data 的元素，都要经历一次读回和累加，存在一定的浪费。
+
+因此考虑将累加也完全交给 xmm 寄存器进行运算。将矩阵 dctlookup 转置，矩阵形如：
+
+x<sub>11</sub>　x<sub>21</sub>　...　x<sub>71</sub>　x<sub>81</sub>
+
+x<sub>12</sub>　x<sub>22</sub>　...　x<sub>72</sub>　x<sub>82</sub>
+
+...
+
+x<sub>18</sub>　x<sub>28</sub>　...　x<sub>78</sub>　x<sub>88</sub>
+
+此时放入两个寄存器的元素分别为  x<sub>11</sub>, x<sub>21</sub>, x<sub>31</sub>, x<sub>41</sub> 和 x<sub>51</sub>, x<sub>61</sub>, x<sub>71</sub>, x<sub>81</sub>，与之相乘的元素分别为 in\_data[1], in\_data[2], in\_data[3], in\_data[4] 和 in\_data[5], in\_data[6], in\_data[7], in\_data[8]，最后将两个寄存器内容分别取出并写回 out\_data 的对应位置， 只需要经历两次 in\_data 读取和 out\_data 写回（一次读 / 写只能操作其中的四个元素）。
+
+dctlookup 的转置采用硬编码的方式写入 tables.c，避免转置运算的性能开销。
