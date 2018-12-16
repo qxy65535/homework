@@ -314,7 +314,7 @@ dct_quantize(image->V, cm->curframe->predicted->V, cm->width*VX/YX, cm->height*V
 
 |                              | foreman.yuv | tractor.yuv | PSNR |
 | :--------------------------: | ----------- | ----------- | ---- |
-|           原始代码           |             |             |      |
+|           原始代码           | 25.85s      | 1283.31s    |      |
 |  sad_block_8x8 函数的优化v1  | 4.32s       | 209.87s     |      |
 | sad_block_8x8 函数的优化v2.3 | 3.73s       | 180.13s     |      |
 
