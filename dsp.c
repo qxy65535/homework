@@ -1,7 +1,7 @@
 #include <inttypes.h>
 #include <math.h>
 #include <stdlib.h>
-#include <x86intrin.h>
+#include <xmmintrin.h>
 
 #include "tables.h"
 
@@ -16,6 +16,30 @@ static void transpose_block(float *in_data, float *out_data)
             out_data[i*8+j] = in_data[j*8+i];
         }
 }
+
+// static void transpose_4x4(float *in_data, float *out_data)
+// {
+//     __m128 row0 = _mm_load_ps(in_data);
+//     __m128 row1 = _mm_load_ps(in_data+8);
+//     __m128 row2 = _mm_load_ps(in_data+16);
+//     __m128 row3 = _mm_load_ps(in_data+24);
+
+//     _MM_TRANSPOSE4_PS(row0, row1, row2, row3);
+
+//     _mm_store_ps(out_data, row0);
+// 	_mm_store_ps(out_data + 8, row1);
+// 	_mm_store_ps(out_data + 16, row2);
+// 	_mm_store_ps(out_data + 24, row3);
+// }
+
+//  改进后 v1：负优化
+// static void transpose_block(float *in_data, float *out_data)
+// {
+//     transpose_4x4(in_data, out_data);
+//     transpose_4x4(in_data+4, out_data+32);
+//     transpose_4x4(in_data+32, out_data+4);
+//     transpose_4x4(in_data+36, out_data+36);
+// }
 
 // 原始代码
 // static void dct_1d(float *in_data, float *out_data)
@@ -35,31 +59,59 @@ static void transpose_block(float *in_data, float *out_data)
 //     }
 // }
 
-//  改进后 v1
+//  改进后 v1：效果肉眼不可见，但好像没有负优化
 static void dct_1d(float *in_data, float *out_data)
 {
     int j;
-    __m128 xmm0_dct_03, xmm1_dct_48;
-    __m128 xmm2_in_data;
-    __m128 xmm3_out_data_03, xmm4_out_data_48;
-    xmm3_out_data_03 = xmm4_out_data_48 = _mm_setzero_ps();
+    __m128 row0_03 = _mm_load_ps(dctlookup[0]);
+    __m128 row1_03 = _mm_load_ps(dctlookup[1]);
+    __m128 row2_03 = _mm_load_ps(dctlookup[2]);
+    __m128 row3_03 = _mm_load_ps(dctlookup[3]);
+    __m128 row4_03 = _mm_load_ps(dctlookup[4]);
+    __m128 row5_03 = _mm_load_ps(dctlookup[5]);
+    __m128 row6_03 = _mm_load_ps(dctlookup[6]);
+    __m128 row7_03 = _mm_load_ps(dctlookup[7]);
+
+    __m128 row0_47 = _mm_load_ps(dctlookup[0]+4);
+    __m128 row1_47 = _mm_load_ps(dctlookup[1]+4);
+    __m128 row2_47 = _mm_load_ps(dctlookup[2]+4);
+    __m128 row3_47 = _mm_load_ps(dctlookup[3]+4);
+    __m128 row4_47 = _mm_load_ps(dctlookup[4]+4);
+    __m128 row5_47 = _mm_load_ps(dctlookup[5]+4);
+    __m128 row6_47 = _mm_load_ps(dctlookup[6]+4);
+    __m128 row7_47 = _mm_load_ps(dctlookup[7]+4);
 
     for (j=0; j<8; ++j)
     {
-        xmm0_dct_03 = _mm_load_ps(dctlookup[j]);
-        xmm1_dct_48 = _mm_load_ps(dctlookup[j]+4);
-        xmm2_in_data = _mm_load1_ps(in_data+j);
-
-        xmm0_dct_03 = _mm_mul_ps(xmm0_dct_03, xmm2_in_data);
-        xmm1_dct_48 = _mm_mul_ps(xmm1_dct_48, xmm2_in_data);
-
-        xmm3_out_data_03 = _mm_add_ps(xmm3_out_data_03, xmm0_dct_03);
-        xmm4_out_data_48 = _mm_add_ps(xmm4_out_data_48, xmm1_dct_48);
+        __m128 in_data_0 = _mm_set1_ps(in_data[8*j]);
+        __m128 in_data_1 = _mm_set1_ps(in_data[1+8*j]);
+        __m128 in_data_2 = _mm_set1_ps(in_data[2+8*j]);
+        __m128 in_data_3 = _mm_set1_ps(in_data[3+8*j]);
+        __m128 in_data_4 = _mm_set1_ps(in_data[4+8*j]);
+        __m128 in_data_5 = _mm_set1_ps(in_data[5+8*j]);
+        __m128 in_data_6 = _mm_set1_ps(in_data[6+8*j]);
+        __m128 in_data_7 = _mm_set1_ps(in_data[7+8*j]);
+        __m128 out_data_03 = _mm_add_ps(
+            _mm_add_ps(
+                _mm_add_ps(_mm_mul_ps(row0_03, in_data_0), _mm_mul_ps(row1_03, in_data_1)), 
+                _mm_add_ps(_mm_mul_ps(row2_03, in_data_2), _mm_mul_ps(row3_03, in_data_3))
+            ), 
+            _mm_add_ps(
+                _mm_add_ps(_mm_mul_ps(row4_03, in_data_4), _mm_mul_ps(row5_03, in_data_5)), 
+                _mm_add_ps(_mm_mul_ps(row6_03, in_data_6), _mm_mul_ps(row7_03, in_data_7))
+            ));
+        __m128 out_data_47 = _mm_add_ps(
+            _mm_add_ps(
+                _mm_add_ps(_mm_mul_ps(row0_47, in_data_0), _mm_mul_ps(row1_47, in_data_1)), 
+                _mm_add_ps(_mm_mul_ps(row2_47, in_data_2), _mm_mul_ps(row3_47, in_data_3))
+            ), 
+            _mm_add_ps(
+                _mm_add_ps(_mm_mul_ps(row4_47, in_data_4), _mm_mul_ps(row5_47, in_data_5)), 
+                _mm_add_ps(_mm_mul_ps(row6_47, in_data_6), _mm_mul_ps(row7_47, in_data_7))
+            ));
+        _mm_store_ps(out_data+8*j, out_data_03);
+        _mm_store_ps(out_data+8*j+4, out_data_47);
     }
-
-    _mm_store_ps(out_data, xmm3_out_data_03);
-    _mm_store_ps(out_data+4, xmm4_out_data_48);
-
 }
 
 static void idct_1d(float *in_data, float *out_data)
@@ -80,87 +132,151 @@ static void idct_1d(float *in_data, float *out_data)
 }
 
 // 原始代码
-static void scale_block(float *in_data, float *out_data)
-{
-    int u,v;
-
-    for (v=0; v<8; ++v)
-    {
-        for (u=0; u<8; ++u)
-        {
-            float a1 = !u ? ISQRT2 : 1.0f;
-            float a2 = !v ? ISQRT2 : 1.0f;
-
-            /* Scale according to normalizing function */
-            out_data[v*8+u] = in_data[v*8+u] * a1 * a2;
-        }
-    }
-}
-
 // static void scale_block(float *in_data, float *out_data)
 // {
-//     int v;
-//     __m128 in_data_03, in_data_47;
-//     __m128 xmm_a1_0, xmm_a2_0;
-//     __m128 xmm_out_data03, xmm_out_data47;
+//     int u,v;
 
-//     xmm_a1_0 = _mm_set_ps(1.0f, 1.0f, 1.0f, ISQRT2);
-//     // xmm_a1_1 = xmm_a2_1 = _mm_set1_ps(1.0f);
-//     xmm_a2_0 = _mm_set1_ps(ISQRT2);
-
-//     in_data_03 = _mm_load_ps(in_data);
-//     in_data_47 = _mm_load_ps(in_data+4);
-
-//     xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
-//     xmm_out_data03 = _mm_mul_ps(xmm_a2_0, xmm_out_data03);
-//     // xmm_out_data47 = _mm_mul_ps(xmm_a1_1, in_data_47);
-//     xmm_out_data47 = _mm_mul_ps(xmm_a2_0, in_data_47);
-
-//     /* Scale according to normalizing function */
-//     _mm_store_ps(out_data, xmm_out_data03);
-//     _mm_store_ps(out_data+4, xmm_out_data47);
-    
-//     for (v=1; v<8; ++v)
+//     for (v=0; v<8; ++v)
 //     {
-//         in_data_03 = _mm_load_ps(in_data+v*8);
-//         xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
-//         _mm_store_ps(out_data+v*8, xmm_out_data03);
+//         for (u=0; u<8; ++u)
+//         {
+//             float a1 = !u ? ISQRT2 : 1.0f;
+//             float a2 = !v ? ISQRT2 : 1.0f;
+
+//             /* Scale according to normalizing function */
+//             out_data[v*8+u] = in_data[v*8+u] * a1 * a2;
+//         }
 //     }
 // }
 
-
-static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
+// 改进后 v1：有优化，好像比 zigzag那两个作用大一点
+static void scale_block(float *in_data, float *out_data)
 {
-    int zigzag;
-    for (zigzag=0; zigzag < 64; ++zigzag)
+    int v;
+    __m128 in_data_03, in_data_47;
+    __m128 xmm_a1_0, xmm_a2_0;
+    __m128 xmm_out_data03, xmm_out_data47;
+
+    xmm_a1_0 = _mm_set_ps(1.0f, 1.0f, 1.0f, ISQRT2);
+    // xmm_a1_1 = xmm_a2_1 = _mm_set1_ps(1.0f);
+    xmm_a2_0 = _mm_set1_ps(ISQRT2);
+
+    in_data_03 = _mm_load_ps(in_data);
+    in_data_47 = _mm_load_ps(in_data+4);
+
+    xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
+    xmm_out_data03 = _mm_mul_ps(xmm_a2_0, xmm_out_data03);
+    // xmm_out_data47 = _mm_mul_ps(xmm_a1_1, in_data_47);
+    xmm_out_data47 = _mm_mul_ps(xmm_a2_0, in_data_47);
+
+    /* Scale according to normalizing function */
+    _mm_store_ps(out_data, xmm_out_data03);
+    _mm_store_ps(out_data+4, xmm_out_data47);
+    
+    for (v=1; v<8; ++v)
     {
-        uint8_t u = zigzag_U[zigzag];
-        uint8_t v = zigzag_V[zigzag];
-
-        float dct = in_data[v*8+u];
-
-        /* Zig-zag and quantize */
-        out_data[zigzag] = round((dct / 4.0) / quant_tbl[zigzag]);
+        in_data_03 = _mm_load_ps(in_data+v*8);
+        xmm_out_data47 = _mm_load_ps(in_data+v*8+4);
+        xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
+        _mm_store_ps(out_data+v*8, xmm_out_data03);
+        _mm_store_ps(out_data+v*8+4, xmm_out_data47);
     }
 }
 
+// 原始代码
+// static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
+// {
+//     int zigzag;
+//     for (zigzag=0; zigzag < 64; ++zigzag)
+//     {
+//         uint8_t u = zigzag_U[zigzag];
+//         uint8_t v = zigzag_V[zigzag];
+
+//         float dct = in_data[v*8+u];
+
+//         /* Zig-zag and quantize */
+//         out_data[zigzag] = round((dct / 4.0) / quant_tbl[zigzag]);
+//     }
+// }
+
+// 改进后 v1：有一点点优化
+static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
+{
+    int zigzag;
+    for (zigzag=0; zigzag < 64; zigzag+=4)
+    {
+        uint8_t u0 = zigzag_U[zigzag];
+        uint8_t v0 = zigzag_V[zigzag];
+        uint8_t u1 = zigzag_U[zigzag+1];
+        uint8_t v1 = zigzag_V[zigzag+1];
+        uint8_t u2 = zigzag_U[zigzag+2];
+        uint8_t v2 = zigzag_V[zigzag+2];
+        uint8_t u3 = zigzag_U[zigzag+3];
+        uint8_t v3 = zigzag_V[zigzag+3];
+
+        // float dct = in_data[v*8+u];
+        __m128 xmm_dct = _mm_set_ps(in_data[v3*8+u3], in_data[v2*8+u2], in_data[v1*8+u1], in_data[v0*8+u0]);
+        __m128 xmm_4 = _mm_set1_ps(4.0);
+        __m128 xmm_quant = _mm_set_ps(quant_tbl[zigzag+3], quant_tbl[zigzag+2], quant_tbl[zigzag+1], quant_tbl[zigzag]);
+        /* Zig-zag and quantize */
+        __m128 xmm = _mm_div_ps(_mm_div_ps(xmm_dct, xmm_4), xmm_quant);
+        _mm_store_ps(out_data+zigzag, xmm);
+        out_data[zigzag] = round(out_data[zigzag]);
+        out_data[zigzag+1] = round(out_data[zigzag+1]);
+        out_data[zigzag+2] = round(out_data[zigzag+2]);
+        out_data[zigzag+3] = round(out_data[zigzag+3]);
+    }
+}
+
+// 原始代码
+// static void dequantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
+// {
+//     int zigzag;
+//     for (zigzag=0; zigzag < 64; ++zigzag)
+//     {
+//         uint8_t u = zigzag_U[zigzag];
+//         uint8_t v = zigzag_V[zigzag];
+
+//         float dct = in_data[zigzag];
+
+//         /* Zig-zag and de-quantize */
+//         out_data[v*8+u] = round((dct * quant_tbl[zigzag]) / 4.0);
+//     }
+// }
+
+// 改进后 v1：有一点点优化
 static void dequantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
 {
     int zigzag;
-    for (zigzag=0; zigzag < 64; ++zigzag)
+    for (zigzag=0; zigzag < 64; zigzag+=4)
     {
-        uint8_t u = zigzag_U[zigzag];
-        uint8_t v = zigzag_V[zigzag];
+        uint8_t u0 = zigzag_U[zigzag];
+        uint8_t v0 = zigzag_V[zigzag];
+        uint8_t u1 = zigzag_U[zigzag+1];
+        uint8_t v1 = zigzag_V[zigzag+1];
+        uint8_t u2 = zigzag_U[zigzag+2];
+        uint8_t v2 = zigzag_V[zigzag+2];
+        uint8_t u3 = zigzag_U[zigzag+3];
+        uint8_t v3 = zigzag_V[zigzag+3];
 
-        float dct = in_data[zigzag];
-
-        /* Zig-zag and de-quantize */
-        out_data[v*8+u] = round((dct * quant_tbl[zigzag]) / 4.0);
+        // float dct = in_data[v*8+u];
+        __m128 xmm_dct = _mm_set_ps(in_data[zigzag+3], in_data[zigzag+2], in_data[zigzag+1], in_data[zigzag]);
+        __m128 xmm_4 = _mm_set1_ps(4.0);
+        __m128 xmm_quant = _mm_set_ps(quant_tbl[zigzag+3], quant_tbl[zigzag+2], quant_tbl[zigzag+1], quant_tbl[zigzag]);
+        /* Zig-zag and quantize */
+        __m128 xmm = _mm_div_ps(_mm_mul_ps(xmm_dct, xmm_quant), xmm_4);
+        float p[4] __attribute((aligned(16)));
+        _mm_store_ps(p, xmm);
+        out_data[v0*8+u0] = round(p[0]);
+        out_data[v1*8+u1] = round(p[1]);
+        out_data[v2*8+u2] = round(p[2]);
+        out_data[v3*8+u3] = round(p[3]);
     }
 }
 
 void dct_quant_block_8x8(int16_t *in_data, int16_t *out_data, uint8_t *quant_tbl)
 {
+    _mm_prefetch((char*)in_data, _MM_HINT_T0);
     float mb[8*8] __attribute((aligned(16)));
     float mb2[8*8] __attribute((aligned(16)));
 
@@ -169,18 +285,18 @@ void dct_quant_block_8x8(int16_t *in_data, int16_t *out_data, uint8_t *quant_tbl
     for (i=0; i<64; ++i)
         mb2[i] = in_data[i];
 
-    for (v=0; v<8; ++v)
-    {
-        dct_1d(mb2+v*8, mb+v*8);
-    }
-
+    // for (v=0; v<8; ++v)
+    // {
+    //     dct_1d(mb2+v*8, mb+v*8);
+    // }
+dct_1d(mb2, mb);
     transpose_block(mb, mb2);
 
-    for (v=0; v<8; ++v)
-    {
-        dct_1d(mb2+v*8, mb+v*8);
-    }
-
+    // for (v=0; v<8; ++v)
+    // {
+    //     dct_1d(mb2+v*8, mb+v*8);
+    // }
+dct_1d(mb2, mb);
     transpose_block(mb, mb2);
     scale_block(mb2, mb);
     quantize_block(mb, mb2, quant_tbl);
@@ -304,7 +420,7 @@ void dequant_idct_block_8x8(int16_t *in_data, int16_t *out_data, uint8_t *quant_
 //     *result += _mm_cvtsi128_si32(xmm7);
 // }
 
-//  改进后 v2.3
+
 void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 {
     *result = 0;
