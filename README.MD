@@ -5,6 +5,8 @@
 - [SSE 指令简单说明](#sse)
 - [sad\_block\_8x8 函数的优化v1](#optimization1)
 - [sad\_block\_8x8 函数的优化v2.3](#optimization2)
+- [quantize\_block & dequantize\_block 函数的优化](#optimization3)
+- [scale\_block 函数的优化](#optimization4)
 - [原版代码 BUG 解决](#bug)
 #### - [优化结果](#result)
 #### - [执行指令](#shell)
@@ -13,6 +15,10 @@
 
 
 <h2 id="update">更新内容</h2>
+
+<h4>2018/12/17</h4>
+
+推了三处优化。1080p 的处理速度在我的电脑上提高了10秒左右。努力写说明中。
 
 <h4>2018/12/15   13:26</h4>
 
@@ -99,7 +105,7 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 }
 ```
 
-内层的 u 循环将两个 block 中的八个连续数据相减取绝对值并累加。因此最先想到的是，可以利用 SSE 的思想将最内层的数据打包一起运算，u = 0, 1, 2, 3 为一组运算，u = 4, 5, 6, 7 为一组运算。但在实际操作过程中发现，[SSE 指令简单说明](#sse) 处的代码是将四个 32 位的数据打包，但是这段代码里由于图像处理的特殊情况，每个数据都是 uint8\_t 类型，即 8 位，而且 u 层循环一共处理八个数据，即 8*8=64 位。SSE 指令集在批量存取和计算的数据为 16 字节（128位）对齐的时候效率才是最高的，也没有针对每个单元为 1 字节的数组特定的存取办法，因此数据的存取方法、运算方法等是这里要解决的关键问题。
+内层的 u 循环将两个 block 中的八个连续数据相减取绝对值并累加。因此最先想到的是，可以利用 SSE 的思想将最内层的数据打包一起运算，u = 0, 1, 2, 3 为一组运算，u = 4, 5, 6, 7 为一组运算。但在实际操作过程中发现，[SSE 指令简单说明](#sse) 处的代码是将四个 32 位的数据打包，但是这段代码里由于图像处理的特殊情况，每个数据都是 uint8\_t 类型，即 8 位，而且 u 层循环一共处理八个数据，即 8\*8=64 位。SSE 指令集在批量存取和计算的数据为 16 字节（128位）对齐的时候效率才是最高的，也没有针对每个单元为 1 字节的数组特定的存取办法，因此数据的存取方法、运算方法等是这里要解决的关键问题。
 
 **涉及指令介绍**
 
@@ -199,6 +205,127 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 ```
 
 局限于7个 xmm 寄存器，最多进行四倍的循环展开，与此同时利用 SSE 的 add 指令，可以减少四分之三的数据取回。add 这个地方其实只需要用到寄存器的前32位，感觉还是存在一些浪费，但目前比较没辙。
+
+<h3 id="optimization3">quantize_block & dequantize_block 函数的优化</h3>
+
+quantize\_block 和 dequantize\_block 这两个函数的内部非常相似，因此这里仅对 quantize\_block 的优化进行说明。函数原始代码如下：
+
+```c
+// 原始代码
+static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
+{
+    int zigzag;
+    for (zigzag=0; zigzag < 64; ++zigzag)
+    {
+        uint8_t u = zigzag_U[zigzag];
+        uint8_t v = zigzag_V[zigzag];
+
+        float dct = in_data[v*8+u];
+
+        /* Zig-zag and quantize */
+        out_data[zigzag] = round((dct / 4.0) / quant_tbl[zigzag]);
+    }
+}
+```
+
+优化主要目标是优化最后的浮点除法。由于取用的 dct 的数据不连续，因此不能像之前一样批量取数据载入，这里使用 \_mm\_set\_ps 依次载入四个数据。同时，由于 SSE 指令似乎没有 c 中的 round 函数，因此数据读回后再使用 round 函数进行处理。
+
+优化后代码如下：
+
+```c
+// 改进后 v1：有一点点优化
+static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
+{
+    int zigzag;
+    for (zigzag=0; zigzag < 64; zigzag+=4)
+    {
+        uint8_t u0 = zigzag_U[zigzag];
+        uint8_t v0 = zigzag_V[zigzag];
+        uint8_t u1 = zigzag_U[zigzag+1];
+        uint8_t v1 = zigzag_V[zigzag+1];
+        uint8_t u2 = zigzag_U[zigzag+2];
+        uint8_t v2 = zigzag_V[zigzag+2];
+        uint8_t u3 = zigzag_U[zigzag+3];
+        uint8_t v3 = zigzag_V[zigzag+3];
+
+        // float dct = in_data[v*8+u];
+        __m128 xmm_dct = _mm_set_ps(in_data[v3*8+u3], in_data[v2*8+u2], in_data[v1*8+u1], in_data[v0*8+u0]);
+        __m128 xmm_4 = _mm_set1_ps(4.0);
+        __m128 xmm_quant = _mm_set_ps(quant_tbl[zigzag+3], quant_tbl[zigzag+2], quant_tbl[zigzag+1], quant_tbl[zigzag]);
+        /* Zig-zag and quantize */
+        __m128 xmm = _mm_div_ps(_mm_div_ps(xmm_dct, xmm_4), xmm_quant);
+        _mm_store_ps(out_data+zigzag, xmm);
+        out_data[zigzag] = round(out_data[zigzag]);
+        out_data[zigzag+1] = round(out_data[zigzag+1]);
+        out_data[zigzag+2] = round(out_data[zigzag+2]);
+        out_data[zigzag+3] = round(out_data[zigzag+3]);
+    }
+}
+```
+
+<h3 id="optimization4">scale_block 函数的优化</h3>
+
+相比于其它函数，对 scale\_block 这个函数的优化手段要更加特殊一点点。首先看它的原始代码：
+
+```c
+// 原始代码
+static void scale_block(float *in_data, float *out_data)
+{
+    int u,v;
+
+    for (v=0; v<8; ++v)
+    {
+        for (u=0; u<8; ++u)
+        {
+            float a1 = !u ? ISQRT2 : 1.0f;
+            float a2 = !v ? ISQRT2 : 1.0f;
+
+            /* Scale according to normalizing function */
+            out_data[v*8+u] = in_data[v*8+u] * a1 * a2;
+        }
+    }
+}
+```
+
+除了浮点乘是可考虑优化的内容，其中还有 a1 和 a2 的判断赋值。观察后可以发现，仅当 u = 0 的时候 a1 = ISQRT2，同时也仅当 v = 0 的时候 a2 = ISQRT2，其余时候它们都取 1 ，并没有什么进行乘法运算的必要。因此对于一组 in\_data 数据，其第 0 行第 0 个数据需要乘 a1 和 a2， 第 1~7 个数据只需要乘 a2；其余各行第 0 个数据需要乘 a1，别的数据都不用乘。区分这些数据，对部分数据不进行操作，因此改进后代码如下：
+
+```c
+// 改进后 v1：有优化，好像比 zigzag那两个作用大一点
+static void scale_block(float *in_data, float *out_data)
+{
+    int v;
+    __m128 in_data_03, in_data_47;
+    __m128 xmm_a1_0, xmm_a2_0;
+    __m128 xmm_out_data03, xmm_out_data47;
+
+    xmm_a1_0 = _mm_set_ps(1.0f, 1.0f, 1.0f, ISQRT2);
+    // xmm_a1_1 = xmm_a2_1 = _mm_set1_ps(1.0f);
+    xmm_a2_0 = _mm_set1_ps(ISQRT2);
+
+    in_data_03 = _mm_load_ps(in_data);
+    in_data_47 = _mm_load_ps(in_data+4);
+
+    xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
+    xmm_out_data03 = _mm_mul_ps(xmm_a2_0, xmm_out_data03);
+    // xmm_out_data47 = _mm_mul_ps(xmm_a1_1, in_data_47);
+    xmm_out_data47 = _mm_mul_ps(xmm_a2_0, in_data_47);
+
+    /* Scale according to normalizing function */
+    _mm_store_ps(out_data, xmm_out_data03);
+    _mm_store_ps(out_data+4, xmm_out_data47);
+    
+    for (v=1; v<8; ++v)
+    {
+        in_data_03 = _mm_load_ps(in_data+v*8);
+        xmm_out_data47 = _mm_load_ps(in_data+v*8+4);
+        xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
+        _mm_store_ps(out_data+v*8, xmm_out_data03);
+        _mm_store_ps(out_data+v*8+4, xmm_out_data47);
+    }
+}
+```
+
+心里觉得这个代码完全没前面的优美，可能还存在改进的余地。改进后暂时先放在这儿提供一些思路。
 
 <h3 id="bug">原版代码 BUG 解决</h3>
 
@@ -385,7 +512,7 @@ block[i*8+6] = (int16_t) result[2];
 block[i*8+7] = (int16_t) result[3];
 ```
 
-然后在代码的各个部分加clock()函数查看各个计算耗费的时间，发现编码一个帧大约需要88000左右个时钟，而c63_motion_estimate这一步需要约84000个时钟。显然编码中最耗时的操作在这里，之前修改的dct\_quantize仅需要1300左右个时钟，对整体而言只占非常小一部分的时间。因此，就算在那边负优化了，也决定从运动估计最先下手。虽然还不知道运动估计是什么。
+然后在代码的各个部分加clock()函数查看各个计算耗费的时间，发现编码一个帧大约需要88000左右个时钟，而c63\_motion\_estimate这一步需要约84000个时钟。显然编码中最耗时的操作在这里，之前修改的dct\_quantize仅需要1300左右个时钟，对整体而言只占非常小一部分的时间。因此，就算在那边负优化了，也决定从运动估计最先下手。虽然还不知道运动估计是什么。
 
 ↑以上是在ubuntu虚拟机的工作。后来实在卡的受不了了。。转到windows下工作。。编译使用的是windows的ubuntu子系统。速度（时钟）有偏差，但依然是运动估计占大头。
 
@@ -495,27 +622,10 @@ x<sub>81</sub>　x<sub>82</sub>　...　x<sub>87</sub>　x<sub>88</sub>
 
 按这样的思路直接改完发现变慢了，注解某些代码尝试感觉是累加操作写的不太合适。那边占用里很多时间。
 
+<h4>2018/12/17</h4>
 
+继续昨日的工作。发现昨日的 dct\_1d 中某个数组访问下标写错了，修正后顺便把整体代码修改了下，性能。。。肉眼不可见的优化，但也没有负优化，就放在那边了。理论上我只读取了 dctlookup 一次，应该大大减少了访存时间，但事实上并没有明显优化效果。可能是寄存器不足，虽然 load 了但数据还是被放到了什么堆区栈区内存区，导致它变慢。
 
+继而优化了 quantize\_block 和 dequantize\_block。很神奇，我都没有抱着它们能变快的想法。。。结果竟然优化了一点点点。编码速度从平均180秒改进到了175秒左右。已经完全搞不懂什么时候能加速什么时候不能了。。。
 
-
-
-
-
-out\_data[1] = in\_data[1]\*(x<sub>11</sub> + x<sub>12</sub> + ... + x<sub>17</sub> + x<sub>18</sub>)
-
-乘法可以用 SSE 指令四个数据为一批进行批量处理，即 x<sub>11</sub>, x<sub>12</sub>, x<sub>13</sub>, x<sub>14</sub> 放入一个寄存器，x<sub>15</sub>, x<sub>16</sub>, x<sub>17</sub>, x<sub>18</sub> 放入另一个寄存器分别与 in\_data[1] 进行乘法，再把结果相加，最后从寄存器取出四个数累加。这样每个写回 out\_data 的元素，都要经历一次读回和累加，存在一定的浪费。
-
-因此考虑将累加也完全交给 xmm 寄存器进行运算。将矩阵 dctlookup 转置，矩阵形如：
-
-x<sub>11</sub>　x<sub>21</sub>　...　x<sub>71</sub>　x<sub>81</sub>
-
-x<sub>12</sub>　x<sub>22</sub>　...　x<sub>72</sub>　x<sub>82</sub>
-
-...
-
-x<sub>18</sub>　x<sub>28</sub>　...　x<sub>78</sub>　x<sub>88</sub>
-
-此时放入两个寄存器的元素分别为  x<sub>11</sub>, x<sub>21</sub>, x<sub>31</sub>, x<sub>41</sub> 和 x<sub>51</sub>, x<sub>61</sub>, x<sub>71</sub>, x<sub>81</sub>，与之相乘的元素分别为 in\_data[1], in\_data[2], in\_data[3], in\_data[4] 和 in\_data[5], in\_data[6], in\_data[7], in\_data[8]，最后将两个寄存器内容分别取出并写回 out\_data 的对应位置， 只需要经历两次 in\_data 读取和 out\_data 写回（一次读 / 写只能操作其中的四个元素）。
-
-dctlookup 的转置采用硬编码的方式写入 tables.c，避免转置运算的性能开销。
+重新打算推代码和文档，review 代码的时候又看了看前天看过的 scale\_block。揪心它很久了，之前做的时候不知为何效率上去了但视频质量下降了很多。肉眼可见的模糊。今天终于找到问题所在了！！！！！鼓掌！！！！！是因为有一组数据没写回。。它没改变我就忘了写回了。。于是速度优化到了170秒左右。
