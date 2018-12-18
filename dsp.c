@@ -420,49 +420,190 @@ void dequant_idct_block_8x8(int16_t *in_data, int16_t *out_data, uint8_t *quant_
 //     *result += _mm_cvtsi128_si32(xmm7);
 // }
 
-
+// 改进后 v2.5
 void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 {
     *result = 0;
     int v;
     __m128i xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
 
-    for (v=0; v<8; v+=4) {
-        uint8_t *block1_cur = block1+v*stride;
-        uint8_t *block2_cur = block2+v*stride;
+    // block1：8x8块的第0，1行
+    xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1));
+    xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+stride));
+    // 打包到一个寄存器
+    xmm0 = _mm_unpacklo_epi64(xmm0, xmm1);
+    // block2：8x8块的第0，1行
+    xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2));
+    xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+stride));
+    // 打包到一个寄存器
+    xmm1 = _mm_unpacklo_epi64(xmm1, xmm2);
+    xmm0 = _mm_sad_epu8(xmm1, xmm0);
 
-        xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
-        xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
-        xmm1 = _mm_sad_epu8(xmm1, xmm0);
-        // *result += _mm_cvtsi128_si32(xmm1);
+    // block1：8x8块的第2，3行
+    xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+2*stride));
+    xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1+3*stride));
+    xmm1 = _mm_unpacklo_epi64(xmm1, xmm2);
+    // block2：8x8块的第2，3行
+    xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+2*stride));
+    xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2+3*stride));
+    xmm2 = _mm_unpacklo_epi64(xmm2, xmm3);
+    xmm1 = _mm_sad_epu8(xmm2, xmm3);
 
-        block1_cur += stride;
-        block2_cur += stride;
-        xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
-        xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
-        xmm3 = _mm_sad_epu8(xmm3, xmm2);
-        // *result += _mm_cvtsi128_si32(xmm3);
+    xmm0 = _mm_add_epi32(xmm0, xmm1);
 
-        block1_cur += stride;
-        block2_cur += stride;
-        xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
-        xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
-        xmm5 = _mm_sad_epu8(xmm5, xmm4);
-        // *result += _mm_cvtsi128_si32(xmm5);
+    // block1：8x8块的第4，5行
+    xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1+4*stride));
+    xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block1+5*stride));
+    xmm4 = _mm_unpacklo_epi64(xmm4, xmm5);
+    // block2：8x8块的第4，5行
+    xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2+4*stride));
+    xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block2+5*stride));
+    xmm5 = _mm_unpacklo_epi64(xmm5, xmm6);
+    xmm4 = _mm_sad_epu8(xmm5, xmm4);
 
-        block1_cur += stride;
-        block2_cur += stride;
-        xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
-        xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
-        xmm7 = _mm_sad_epu8(xmm7, xmm6);
+    // block1：8x8块的第6，7行
+    xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block1+6*stride));
+    xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1+7*stride));
+    xmm5 = _mm_unpacklo_epi64(xmm5, xmm6);
+    // block2：8x8块的第6，7行
+    xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block2+6*stride));
+    xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2+7*stride));
+    xmm6 = _mm_unpacklo_epi64(xmm6, xmm7);
+    xmm5 = _mm_sad_epu8(xmm6, xmm7);
+    
+    xmm4 = _mm_add_epi32(xmm4, xmm5);
 
-        // 累加，一次性加回result，即只读回一次
-        xmm1 = _mm_add_epi32(xmm1, xmm3);
-        xmm5 = _mm_add_epi32(xmm5, xmm7);
-        xmm7 = _mm_add_epi32(xmm1, xmm5);
-        *result += _mm_cvtsi128_si32(xmm7);
-    }
+    xmm0 = _mm_add_epi32(xmm0, xmm4);
+    xmm1 = _mm_shuffle_epi32(xmm0, 0x01010110);
+    xmm0 = _mm_add_epi32(xmm0, xmm1);
+
+    *result = _mm_cvtsi128_si32(xmm0);
 }
+
+// 改进后 v2.3
+// void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+// {
+//     *result = 0;
+//     int v;
+//     __m128i xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
+
+//     for (v=0; v<8; v+=4) {
+//         uint8_t *block1_cur = block1+v*stride;
+//         uint8_t *block2_cur = block2+v*stride;
+
+//         xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm1 = _mm_sad_epu8(xmm1, xmm0);
+//         // *result += _mm_cvtsi128_si32(xmm1);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm3 = _mm_sad_epu8(xmm3, xmm2);
+//         // *result += _mm_cvtsi128_si32(xmm3);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm5 = _mm_sad_epu8(xmm5, xmm4);
+//         // *result += _mm_cvtsi128_si32(xmm5);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm7 = _mm_sad_epu8(xmm7, xmm6);
+
+//         // 累加，一次性加回result，即只读回一次
+//         xmm1 = _mm_add_epi32(xmm1, xmm3);
+//         xmm5 = _mm_add_epi32(xmm5, xmm7);
+//         xmm7 = _mm_add_epi32(xmm1, xmm5);
+//         *result += _mm_cvtsi128_si32(xmm7);
+//     }
+// }
+
+// 改进后 v2.3-展开版
+// void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+// {
+//     *result = 0;
+//     int v;
+//     __m128i xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
+//     __m128i xmm01, xmm11, xmm21, xmm31, xmm41, xmm51, xmm61, xmm71;
+
+//     // for (v=0; v<8; v+=4) {
+//         uint8_t *block1_cur = block1;
+//         uint8_t *block2_cur = block2;
+
+//         xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm1 = _mm_sad_epu8(xmm1, xmm0);
+//         // *result += _mm_cvtsi128_si32(xmm1);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm3 = _mm_sad_epu8(xmm3, xmm2);
+//         // *result += _mm_cvtsi128_si32(xmm3);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm5 = _mm_sad_epu8(xmm5, xmm4);
+//         // *result += _mm_cvtsi128_si32(xmm5);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm7 = _mm_sad_epu8(xmm7, xmm6);
+
+//         // 累加，一次性加回result，即只读回一次
+//         xmm1 = _mm_add_epi32(xmm1, xmm3);
+//         xmm5 = _mm_add_epi32(xmm5, xmm7);
+//         xmm7 = _mm_add_epi32(xmm1, xmm5);
+
+
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+
+//         xmm01 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm11 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm11 = _mm_sad_epu8(xmm11, xmm01);
+//         // *result += _mm_cvtsi128_si32(xmm1);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm21 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm31 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm31 = _mm_sad_epu8(xmm31, xmm21);
+//         // *result += _mm_cvtsi128_si32(xmm3);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm41 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm51 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm51 = _mm_sad_epu8(xmm51, xmm41);
+//         // *result += _mm_cvtsi128_si32(xmm5);
+
+//         block1_cur += stride;
+//         block2_cur += stride;
+//         xmm61 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
+//         xmm71 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
+//         xmm71 = _mm_sad_epu8(xmm71, xmm61);
+
+//         // 累加，一次性加回result，即只读回一次
+//         xmm11 = _mm_add_epi32(xmm11, xmm31);
+//         xmm51 = _mm_add_epi32(xmm51, xmm71);
+//         xmm71 = _mm_add_epi32(xmm11, xmm51);
+//         xmm7 = _mm_add_epi32(xmm7, xmm71);
+//         *result = _mm_cvtsi128_si32(xmm7);
+//     // }
+// }
 
 //  改进后 v2 ← 可能因为操作变多了，失败。弃。
 // void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
