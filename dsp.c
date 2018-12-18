@@ -423,7 +423,7 @@ void dequant_idct_block_8x8(int16_t *in_data, int16_t *out_data, uint8_t *quant_
 // 改进后 v2.5
 void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 {
-    *result = 0;
+    // *result = 0;
     int v;
     __m128i xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
 
@@ -447,7 +447,7 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
     xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+2*stride));
     xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2+3*stride));
     xmm2 = _mm_unpacklo_epi64(xmm2, xmm3);
-    xmm1 = _mm_sad_epu8(xmm2, xmm3);
+    xmm1 = _mm_sad_epu8(xmm2, xmm1);
 
     xmm0 = _mm_add_epi32(xmm0, xmm1);
 
@@ -469,12 +469,12 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
     xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block2+6*stride));
     xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2+7*stride));
     xmm6 = _mm_unpacklo_epi64(xmm6, xmm7);
-    xmm5 = _mm_sad_epu8(xmm6, xmm7);
+    xmm5 = _mm_sad_epu8(xmm6, xmm5);
     
     xmm4 = _mm_add_epi32(xmm4, xmm5);
 
     xmm0 = _mm_add_epi32(xmm0, xmm4);
-    xmm1 = _mm_shuffle_epi32(xmm0, 0x01010110);
+    xmm1 = _mm_shuffle_epi32(xmm0, _MM_SHUFFLE(1,1,1,2));
     xmm0 = _mm_add_epi32(xmm0, xmm1);
 
     *result = _mm_cvtsi128_si32(xmm0);
