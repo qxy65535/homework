@@ -5,6 +5,7 @@
 - [SSE 指令简单说明](#sse)
 - [sad\_block\_8x8 函数的优化v1](#optimization1)
 - [sad\_block\_8x8 函数的优化v2.3](#optimization2)
+- [sad\_block\_8x8 函数的优化v2.5](#optimization5)
 - [quantize\_block & dequantize\_block 函数的优化](#optimization3)
 - [scale\_block 函数的优化](#optimization4)
 - [原版代码 BUG 解决](#bug)
@@ -15,6 +16,10 @@
 
 
 <h2 id="update">更新内容</h2>
+
+<h4>2018/12/18 14:36</h4>
+
+再度优化了 sad\_block\_8x8 函数，写了 v2.5 的文档。优化过程中发现对这个函数的某个错误优化大大提高效率，有时间的话写一下这个相关文档（尽我所能吧）。
 
 <h4>2018/12/17</h4>
 
@@ -131,6 +136,24 @@ int _mm_cvtsi128_si32(__m128i xmm)
 /**
 * a = R0
 */
+
+// 交织寄存器 a 和 b 的低64位
+_m128i _mm_unpacklo_epi64(__m128i a, __m128i b)
+/**
+* R0 = a[0]
+* R1 = b[0]
+*/
+
+// 按照 imm 的值交换 a 寄存器中四个32位整数的顺序，imm 建议由宏 _MM_SHUFFLE() 生成
+_m128i _mm_shuffle_epi32(__m128i a, int imm)
+/**
+* 例：_m128i b = _mm_shuffle_epi32(a, _MM_SHUFFLE(0,2,3,1));
+* b0 = a[1]
+* b1 = a[3]
+* b2 = a[2]
+* b3 = a[0]
+*/
+
 ```
 
 **修改后 sad\_block\_8x8 内部代码**
@@ -205,6 +228,74 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 ```
 
 局限于7个 xmm 寄存器，最多进行四倍的循环展开，与此同时利用 SSE 的 add 指令，可以减少四分之三的数据取回。add 这个地方其实只需要用到寄存器的前32位，感觉还是存在一些浪费，但目前比较没辙。
+
+<h3 id="optimization5">sad_block_8x8 函数的优化v2.5</h3>
+
+在 v2.3版本中每次 sad 操作仅使用到了寄存器的低64位，理论上浪费了一半寄存器。所以在这里用 \_mm\_unpacklo\_epi64 把两个寄存器的低64位合并到一个寄存器中。这样做之后不仅完整利用了所有128位的寄存器，而且彻底展开了整个循环。测试下来这样的做法比 v2.3 中的函数再展开一次的效率来的更高。代码如下：
+
+```c
+// 改进后 v2.5
+void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+{
+    // *result = 0;
+    int v;
+    __m128i xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
+
+    // block1：8x8块的第0，1行
+    xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1));
+    xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+stride));
+    // 打包到一个寄存器
+    xmm0 = _mm_unpacklo_epi64(xmm0, xmm1);
+    // block2：8x8块的第0，1行
+    xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2));
+    xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+stride));
+    // 打包到一个寄存器
+    xmm1 = _mm_unpacklo_epi64(xmm1, xmm2);
+    xmm0 = _mm_sad_epu8(xmm1, xmm0);
+
+    // block1：8x8块的第2，3行
+    xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+2*stride));
+    xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1+3*stride));
+    xmm1 = _mm_unpacklo_epi64(xmm1, xmm2);
+    // block2：8x8块的第2，3行
+    xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+2*stride));
+    xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2+3*stride));
+    xmm2 = _mm_unpacklo_epi64(xmm2, xmm3);
+    xmm1 = _mm_sad_epu8(xmm2, xmm1);
+
+    xmm0 = _mm_add_epi32(xmm0, xmm1);
+
+    // block1：8x8块的第4，5行
+    xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1+4*stride));
+    xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block1+5*stride));
+    xmm4 = _mm_unpacklo_epi64(xmm4, xmm5);
+    // block2：8x8块的第4，5行
+    xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2+4*stride));
+    xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block2+5*stride));
+    xmm5 = _mm_unpacklo_epi64(xmm5, xmm6);
+    xmm4 = _mm_sad_epu8(xmm5, xmm4);
+
+    // block1：8x8块的第6，7行
+    xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block1+6*stride));
+    xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block1+7*stride));
+    xmm5 = _mm_unpacklo_epi64(xmm5, xmm6);
+    // block2：8x8块的第6，7行
+    xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block2+6*stride));
+    xmm7 = _mm_cvtsi64_si128(*(int64_t*)(block2+7*stride));
+    xmm6 = _mm_unpacklo_epi64(xmm6, xmm7);
+    xmm5 = _mm_sad_epu8(xmm6, xmm5);
+    
+    xmm4 = _mm_add_epi32(xmm4, xmm5);
+
+    xmm0 = _mm_add_epi32(xmm0, xmm4);
+    xmm1 = _mm_shuffle_epi32(xmm0, _MM_SHUFFLE(1,1,1,2));
+    xmm0 = _mm_add_epi32(xmm0, xmm1);
+
+    *result = _mm_cvtsi128_si32(xmm0);
+}
+```
+
+首先，读两个数据到寄存器，然后利用 \_mm\_unpacklo\_epi64 将低位其合并到一个寄存器。由于最后的结果分别作为16位数放在寄存器的 0~15 位和 64~79 位，为了避免先取出后累加的性能浪费，这里用 \_mm\_shuffle\_epi32 将 64 ~95 位的数据 shuffle 到另一个寄存器的 0~32 位，最后通过 \_mm\_add\_epi32 将两个数据相加，并取出低32位赋值给 int 型的 result。
 
 <h3 id="optimization3">quantize_block & dequantize_block 函数的优化</h3>
 
@@ -439,11 +530,26 @@ dct_quantize(image->V, cm->curframe->predicted->V, cm->width*VX/YX, cm->height*V
 
 <h2 id="result">优化结果</h2>
 
-|                              | foreman.yuv | tractor.yuv | PSNR |
-| :--------------------------: | ----------- | ----------- | ---- |
-|           原始代码           | 25.85s      | 1283.31s    |      |
-|  sad_block_8x8 函数的优化v1  | 4.32s       | 209.87s     |      |
-| sad_block_8x8 函数的优化v2.3 | 3.73s       | 180.13s     |      |
+**注：以下优化内容的时间来自于各优化内容顺序叠加**
+
+**例如：**
+
+**sad_block_8x8 v1：只有 sad_block_8x8 v1**
+
+**sad_block_8x8 v2.3：只有 sad_block_8x8 v2.3**
+
+**quantize\_block & dequantize\_block： sad_block_8x8 v2.3 + quantize\_block & dequantize\_block**
+
+**诸如此类**
+
+|              优化内容               | foreman.yuv | tractor.yuv | PSNR   |
+| :---------------------------------: | ----------- | ----------- | ------ |
+|              原始代码               | 25.85s      | 1283.31s    |        |
+|          sad_block_8x8 v1           | 4.32s       | 209.87s     | ------ |
+|         sad_block_8x8 v2.3          | 3.73s       | 180.13s     | ------ |
+| quantize\_block & dequantize\_block |             |             | ------ |
+|            scale\_block             |             |             | ------ |
+|         sad_block_8x8 v2.5          |             |             |        |
 
 
 
@@ -629,3 +735,7 @@ x<sub>81</sub>　x<sub>82</sub>　...　x<sub>87</sub>　x<sub>88</sub>
 继而优化了 quantize\_block 和 dequantize\_block。很神奇，我都没有抱着它们能变快的想法。。。结果竟然优化了一点点点。编码速度从平均180秒改进到了175秒左右。已经完全搞不懂什么时候能加速什么时候不能了。。。
 
 重新打算推代码和文档，review 代码的时候又看了看前天看过的 scale\_block。揪心它很久了，之前做的时候不知为何效率上去了但视频质量下降了很多。肉眼可见的模糊。今天终于找到问题所在了！！！！！鼓掌！！！！！是因为有一组数据没写回。。它没改变我就忘了写回了。。于是速度优化到了170秒左右。
+
+<h4>2018/12/18</h4>
+
+再度优化了 sad\_block\_8x8。太神奇了。。。几乎所有的优化都是这玩意儿带来的而且每次优化都非常明显。。与之相比其他几个函数真是太辣鸡了（不）。编码时间日渐变短，代码日渐变丑，这就是强者的世界吗（不）。顺便进行了一次错误优化，时间起飞，质量意外的没有下降，看了看其他关联代码感觉应该分析出原因了，唯一的缺点是编码后的 c63 文件变大了不少。准备也写一下它的文档。啊。好累。想复习高数。它要完了。。
