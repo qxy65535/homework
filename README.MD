@@ -8,7 +8,9 @@
 - [sad\_block\_8x8 函数的优化v2.5](#optimization5)
 - [quantize\_block & dequantize\_block 函数的优化](#optimization3)
 - [scale\_block 函数的优化](#optimization4)
+- [dct\_1d 函数的优化](#optimization6)
 - [原版代码 BUG 解决](#bug)
+#### - [负面优化和错误优化](#bad)
 #### - [优化结果](#result)
 #### - [执行指令](#shell)
 #### - [日志记录（碎碎念）](#log)
@@ -196,21 +198,18 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
         __m128i xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
         __m128i xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
         xmm1 = _mm_sad_epu8(xmm1, xmm0);
-        // *result += _mm_cvtsi128_si32(xmm1);
 
         block1_cur += stride;
         block2_cur += stride;
         __m128i xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
         __m128i xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
         xmm3 = _mm_sad_epu8(xmm3, xmm2);
-        // *result += _mm_cvtsi128_si32(xmm3);
 
         block1_cur += stride;
         block2_cur += stride;
         __m128i xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1_cur));
         __m128i xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2_cur));
         xmm5 = _mm_sad_epu8(xmm5, xmm4);
-        // *result += _mm_cvtsi128_si32(xmm5);
 
         block1_cur += stride;
         block2_cur += stride;
@@ -227,7 +226,7 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 }
 ```
 
-局限于7个 xmm 寄存器，最多进行四倍的循环展开，与此同时利用 SSE 的 add 指令，可以减少四分之三的数据取回。add 这个地方其实只需要用到寄存器的前32位，感觉还是存在一些浪费，但目前比较没辙。
+考虑到只有7个 xmm 寄存器，因此进行四倍的循环展开，与此同时利用 SSE 的 add 指令，可以减少四分之三的数据取回。add 这个地方其实只需要用到寄存器的前32位，感觉还是存在一些浪费，但目前比较没辙。
 
 <h3 id="optimization5">sad_block_8x8 函数的优化v2.5</h3>
 
@@ -253,27 +252,7 @@ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
     xmm1 = _mm_unpacklo_epi64(xmm1, xmm2);
     xmm0 = _mm_sad_epu8(xmm1, xmm0);
 
-    // block1：8x8块的第2，3行
-    xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+2*stride));
-    xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block1+3*stride));
-    xmm1 = _mm_unpacklo_epi64(xmm1, xmm2);
-    // block2：8x8块的第2，3行
-    xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+2*stride));
-    xmm3 = _mm_cvtsi64_si128(*(int64_t*)(block2+3*stride));
-    xmm2 = _mm_unpacklo_epi64(xmm2, xmm3);
-    xmm1 = _mm_sad_epu8(xmm2, xmm1);
-
-    xmm0 = _mm_add_epi32(xmm0, xmm1);
-
-    // block1：8x8块的第4，5行
-    xmm4 = _mm_cvtsi64_si128(*(int64_t*)(block1+4*stride));
-    xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block1+5*stride));
-    xmm4 = _mm_unpacklo_epi64(xmm4, xmm5);
-    // block2：8x8块的第4，5行
-    xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block2+4*stride));
-    xmm6 = _mm_cvtsi64_si128(*(int64_t*)(block2+5*stride));
-    xmm5 = _mm_unpacklo_epi64(xmm5, xmm6);
-    xmm4 = _mm_sad_epu8(xmm5, xmm4);
+	...
 
     // block1：8x8块的第6，7行
     xmm5 = _mm_cvtsi64_si128(*(int64_t*)(block1+6*stride));
@@ -312,7 +291,6 @@ static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
         uint8_t v = zigzag_V[zigzag];
 
         float dct = in_data[v*8+u];
-
         /* Zig-zag and quantize */
         out_data[zigzag] = round((dct / 4.0) / quant_tbl[zigzag]);
     }
@@ -324,7 +302,7 @@ static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
 优化后代码如下：
 
 ```c
-// 改进后 v1：有一点点优化
+// 改进后 v1
 static void quantize_block(float *in_data, float *out_data, uint8_t *quant_tbl)
 {
     int zigzag;
@@ -390,7 +368,6 @@ static void scale_block(float *in_data, float *out_data)
     __m128 xmm_out_data03, xmm_out_data47;
 
     xmm_a1_0 = _mm_set_ps(1.0f, 1.0f, 1.0f, ISQRT2);
-    // xmm_a1_1 = xmm_a2_1 = _mm_set1_ps(1.0f);
     xmm_a2_0 = _mm_set1_ps(ISQRT2);
 
     in_data_03 = _mm_load_ps(in_data);
@@ -398,7 +375,6 @@ static void scale_block(float *in_data, float *out_data)
 
     xmm_out_data03 = _mm_mul_ps(xmm_a1_0, in_data_03);
     xmm_out_data03 = _mm_mul_ps(xmm_a2_0, xmm_out_data03);
-    // xmm_out_data47 = _mm_mul_ps(xmm_a1_1, in_data_47);
     xmm_out_data47 = _mm_mul_ps(xmm_a2_0, in_data_47);
 
     /* Scale according to normalizing function */
@@ -417,6 +393,80 @@ static void scale_block(float *in_data, float *out_data)
 ```
 
 心里觉得这个代码完全没前面的优美，可能还存在改进的余地。改进后暂时先放在这儿提供一些思路。
+
+<h3 id="optimization6">dct_1d 函数的优化</h3>
+
+结合外层调用 dct\_1d 的部分，这个函数的作用是矩阵乘法。该函数原始代码如下：
+
+```c
+// 原始代码
+static void dct_1d(float *in_data, float *out_data)
+{
+    int i,j;
+
+    for (j=0; j<8; ++j)
+    {
+        float dct = 0;
+
+        for (i=0; i<8; ++i)
+        {
+            dct += in_data[i] * dctlookup[i][j];
+        }
+
+        out_data[j] = dct;
+    }
+}
+```
+
+其中 dctlookup 为一个 float 类型的 8x8 矩阵硬编码在 tables.c 中。矩阵形如：
+
+x<sub>00</sub>　x<sub>01</sub>　...　x<sub>06</sub>　x<sub>07</sub>
+
+x<sub>10</sub>　x<sub>11</sub>　...　x<sub>16</sub>　x<sub>17</sub>
+
+...
+
+x<sub>70</sub>　x<sub>71</sub>　...　x<sub>76</sub>　x<sub>77</sub>
+
+这个代码需要把 dctlookup 中第 j 列的八个元素乘以某个数并累加，赋值到 out\_data 的第 j 个元素。计算如下：
+
+out\_data[0] =  in\_data[0] \* x<sub>00</sub> + in\_data[1] \* x<sub>10</sub> + ... +   in\_data[7] \* x<sub>70</sub> 
+
+按照 SSE 的思想，首先想到的是把上式右式的数据作为两组，分别放入四个寄存器进行运算，最后将运算得到的八个数字求和：
+
+xmm0： x<sub>00</sub>, x<sub>10</sub>, x<sub>20</sub>, x<sub>30</sub>
+
+xmm1：in\_data[0]~in\_data[3]
+
+xmm2： x<sub>40</sub>, x<sub>50</sub>, x<sub>60</sub>, x<sub>70</sub>
+
+xmm3：in\_data[4]~in\_data[7]
+
+tmp_results[4] ← xmm0\*xmm1 + xmm2\*xmm3
+
+out\_data[0] = tmp_results[0] + tmp_results[1] + tmp_results[2] + tmp_results[3]
+
+但这样做不仅从 dctlookup 中取数据不连续，而且将至少四个数字从寄存器读出求和，性能浪费非常大。因此改变数据的读取和相乘的顺序：将 x<sub>00</sub>, x<sub>01</sub>, x<sub>02</sub>, x<sub>03</sub> 放入一个寄存器，x<sub>04</sub>, x<sub>05</sub>, x<sub>06</sub>, x<sub>07</sub> 放入另一个寄存器，与之相乘的元素均为 in\_data[0]，每轮寄存器数据分别累加，最后将两个寄存器内容分别取出并写回 out\_data 的对应位置。
+
+xmm0： x<sub>00</sub>, x<sub>01</sub>, x<sub>02</sub>, x<sub>03</sub> 
+
+xmm1：in\_data[0], in\_data[0], in\_data[0], in\_data[0]
+
+xmm2： x<sub>10</sub>, x<sub>11</sub>, x<sub>12</sub>, x<sub>13</sub>
+
+xmm3：in\_data[1], in\_data[1], in\_data[1], in\_data[1]
+
+....
+
+xmm14： x<sub>70</sub>, x<sub>71</sub>, x<sub>72</sub>, x<sub>73</sub>
+
+xmm15：in\_data[1], in\_data[1], in\_data[1], in\_data[1]
+
+xmm_result = xmm0\*xmm1 + xmm2\*xmm3 + ... + xmm14\*xmm15
+
+out\_data ← xmm_result （写入0~3共四个运算结果）
+
+这样不仅可以连续取出 dctlookup 的数据，也能更好地利用 SSE 指令进行批量数据的加法运算，而且可以更快地批量取回数据，使指令的效率尽肯能地提高。具体代码参见 dsp.c。
 
 <h3 id="bug">原版代码 BUG 解决</h3>
 
@@ -526,7 +576,53 @@ dct_quantize(image->V, cm->curframe->predicted->V, cm->width*VX/YX, cm->height*V
 
 经测试后发现两个平台下都能跑通了。而且编码后的文件能被正常解码，解码后的视频能正常播放。
 
+<h2 id="bad">负面优化和错误优化</h2>
 
+<h3 id="negative">负面优化</h3>
+
+优化过程中经历了不少负面优化，部分负优化前文也有简单提到，例如 [sad\_block\_8x8 函数的优化v2.3](#optimization2) 中提到的想要完全利用128位的寄存器却由于指令使用不当导致的效率减慢问题，实际上这个函数是优化中最为重要、效果最明显的一个函数，同时也是优化过程中经历最多失败版本的函数。其他也有种种负优化，由于时间原因，无法将所有负优化都像正面优化一样详细列出，因此在这里进行一些简单的记录和感想：
+
+首先是刚开始拿到代码想要优化的时候，对代码在干什么几乎没有什么概念，因此首当其冲选择了每一帧都会进行的操作：dct\_quantize 进行优化。跟进到函数里，最内层的循环为 dct\_quantize\_row，结合上课学到的一点点关于 SSE 指令应用的知识，直接对它进行改写，用的指令也是非常低效率。果不其然，改完后速度不仅没变快，还慢了不少，当时还有点懵地去查了下为什么用了 SSE 指令反而变慢，现在觉得这个行为还蛮蠢的，什么事儿都得一步步来，于是静下心来对主要步骤计算了一下用时，马上就发现最应该优化的不是 dct\_quantize，而是 c63\_motion\_estimate，因为它才是占用了编码时间的大头。
+
+我们也尝试了替换矩阵转置的函数，用 SSE 指令将其编码，但替换代码后也没有看到明显的优化效果，总体上升至还比原来更慢一点。另外一开始想要优化的 dct\_quantize\_row 部分，最终也没对它完成优化，因为无论怎么改我们都觉得效率下降了。
+
+总结前面的种种错误优化，我们认为应该优化的部分首先要占计算的大头，即它需要处理非常多的数据，占用较大比重的计算时间，因为将数据载入和写回需要消耗较多的时间，如果在计算速度上不能有明显的提升，就会导致程序变慢；其次要高效、合理地使用 SSE 指令，因为我们优化的都是最内层的循环，即使是一点点的性能浪费，就算只加了一个 add 操作，放大到整个程序后，效率下降都是非常明显的。
+
+<h3 id="wrong">错误优化</h3>
+
+在优化 sad\_block\_8x8 的过程中，我们写了一个比较有意思的函数： 
+
+```c
+void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+{
+    *result = 0;
+    int v;
+    __m128i xmm0, xmm1, xmm2;
+
+    for (v=0; v<8; v+=2) {
+        xmm0 = _mm_cvtsi64_si128(*(int64_t*)(block1));
+        xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block1+stride));
+        xmm0 = _mm_unpacklo_epi64(xmm0, xmm1);
+
+        xmm1 = _mm_cvtsi64_si128(*(int64_t*)(block2));
+        xmm2 = _mm_cvtsi64_si128(*(int64_t*)(block2+stride));
+        xmm1 = _mm_unpacklo_epi64(xmm1, xmm2);
+
+        xmm0 = _mm_sad_epu8(xmm1, xmm0);
+        int *val = (int*) &xmm0;
+        // _mm_store_si128(res, xmm0);
+        *result += val[0]+val[2];
+    }
+}
+```
+
+显然这个函数是错误的。由于忘记写 v\*，在循环中每一轮计算的都是 block1(2) 和 block1(2)+stride，即只计算了 8\*8 块的前两行，而我们需要计算的应该是完整的两个 8\*8 块的像素差。结果导致这个代码的编码时间比没有错误的代码缩短了非常多，而编码再解码视频质量几乎不变：在我们的实现中，使用所有优化叠加得到的效果，编码 foreman.yuv 的时间至少为3.3秒，编码 tractor.yuv 的时间至少为 161秒，而使用这版 sad\_block\_8x8 函数时编码时间分别轻易达到了2.4秒和115秒左右；其他编码方式解码得到的 foreman.yuv 文件对比原始 yuv 文件的 PSNR 为 36.62，而使用这版 BUG 代码得到的 PSNR 仅降低到 35.79，肉眼不可见画质降低。作为代价，编码 foreman 得到的 .c63 文件尺寸为 6.4 MB，其他编码器得到的文件大小仅 4.9 MB；编码 tractor 得到的文件更是增大了超过 40MB 之多。
+
+一开始并没有发现编码后文件体积的变化，仅仅是对优化提升如此之大感到高兴。但在后来我们冷静分析了函数的作用与处理的数据后，推测出结论：
+
+这个 bug 应该就是对运动估计的检测失误，因为只对比了两行（本来要八行）所以速度快了很多。找错块应该也不会带来什么画质影像，因为它 dct 里边还是要作差的。但是编码后的 c63 文件增大了很多，因为没有匹配到最合适的块，产生了冗余。
+
+因此，即使它具有非常高的速度和不低的输出画面质量，我们依然决定不起用这一版代码。
 
 <h2 id="result">优化结果</h2>
 
@@ -534,24 +630,23 @@ dct_quantize(image->V, cm->curframe->predicted->V, cm->width*VX/YX, cm->height*V
 
 **例如：**
 
-**sad_block_8x8 v1：只有 sad_block_8x8 v1**
+**sad\_block\_8x8 v1：只有 sad\_block\_8x8 v1**
 
-**sad_block_8x8 v2.3：只有 sad_block_8x8 v2.3**
+**sad\_block\_8x8 v2.3：只有 sad\_block\_8x8 v2.3**
 
-**quantize\_block & dequantize\_block： sad_block_8x8 v2.3 + quantize\_block & dequantize\_block**
+**quantize\_block & dequantize\_block： sad\_block\_8x8 v2.3 + quantize\_block & dequantize\_block**
 
 **诸如此类**
 
-|              优化内容               | foreman.yuv | tractor.yuv | PSNR   |
-| :---------------------------------: | ----------- | ----------- | ------ |
-|              原始代码               | 25.85s      | 1283.31s    |        |
-|          sad_block_8x8 v1           | 4.32s       | 209.87s     | ------ |
-|         sad_block_8x8 v2.3          | 3.73s       | 180.13s     | ------ |
-| quantize\_block & dequantize\_block |             |             | ------ |
-|            scale\_block             |             |             | ------ |
-|         sad_block_8x8 v2.5          |             |             |        |
-
-
+|              优化内容               | time(foreman) | time(tractor) | PSNR(foreman) | PSNR(tractor) |
+| :---------------------------------: | :---------: | :---------: | :----: | :---------------------------------: |
+|              原始代码               | 25.85s      | 1283.31s    | 36.62 | 39.43 |
+|          sad\_block\_8x8 v1           | 4.32s       | 209.87s     | 36.62 | 39.42 |
+|         sad\_block\_8x8 v2.3          | 3.70s      | 179.39s |     36.62     | 39.42 |
+| quantize\_block & dequantize\_block | 3.65s | 175.29s |     36.62     | 39.42 |
+|            scale\_block             | 3.56s | 173.77s |     36.62     | 39.42 |
+|               dct\_1d                | 3.55s | 171.55s | 36.62 | 39.42 |
+|         sad\_block\_8x8 v2.5          | 3.35s | 163.28s |        |  |
 
 <h2 id="shell">执行指令</h2>
 
